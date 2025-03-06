@@ -51,37 +51,37 @@ py.exe -3.9 -m pip install venv
 
 2. **Create the virtual environment:**
    -  **MacOS**  
-     ```bash
+     ```
      python3 -m venv spot_env
      ```
    -  **Windows**  
-     ```powershell
+     ```
      py.exe -3.9 -m venv spot_env
      ```
 
 3. **Activate the virtual environment:**
    -  **MacOS**  
-     ```bash
+     ```
      source spot_env/bin/activate
      ```
    -  **Windows**  
-     ```powershell
+     ```
      .\spot_env\Scripts\activate.bat
      ```
 
 4. **Install BosDyn dependencies:**
-   ```bash
+   ```
    python -m pip install bosdyn-client==4.0.3 bosdyn-mission==4.0.3 bosdyn-choreography-client==4.0.3 bosdyn-orbit==4.0.3
    ```
 
 5. **Clone the Boston Dynamics repository and install requirements:**
-   ```bash
+   ```
    git clone https://github.com/boston-dynamics/spot-sdk.git
    python -m pip install -r requirements.txt
    ```
 
 6. **To exit the virtual environment:**
-   ```bash
+   ```
    deactivate
    ```
 
@@ -90,38 +90,38 @@ py.exe -3.9 -m pip install venv
 ## Setup the Tello Virtual Environment
 
 1. **Change into the Tello directory:**
-   ```bash
+   ```
    cd ..
    cd Tello
    ```
 
 2. **Create the Tello virtual environment:**
    -  **MacOS**  
-     ```bash
+     ```
      python3 -m venv tello_env
      ```
    -  **Windows**  
-     ```powershell
+     ```
      py.exe -3.9 -m venv tello_env
      ```
 
 3. **Activate the virtual environment:**
    -  **MacOS**  
-     ```bash
+     ```
      source tello_env/bin/activate
      ```
    -  **Windows**  
-     ```powershell
+     ```
      .\tello_env\Scripts\activate.bat
      ```
 
 4. **Clone the DJI Tello repository:**
-   ```bash
+   ```
    git clone https://github.com/damiafuentes/DJITelloPy.git
    ```
 
 5. **Install dependencies:**
-   ```bash
+   ```
    python -m pip install -r requirements.txt
    ```
 
@@ -133,12 +133,12 @@ py.exe -3.9 -m pip install venv
 
 ## Running the Program
  **MacOS**
-```bash
+```
 python3 gui.py
 ```
 
  **Windows**
-```powershell
+```
 ./gui.py
 ```
 ---

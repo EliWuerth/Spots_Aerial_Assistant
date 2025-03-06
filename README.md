@@ -45,7 +45,7 @@ py.exe -3.9 -m pip install venv
 ## Setup the Spot Virtual Environment
 
 1. **Change into the Spot directory:**
-   ```bash
+   ```
    cd Spot
    ```
 

@@ -1,16 +1,12 @@
 import cv2
-import numpy as np
 from djitellopy import tello
 import tkinter as TK
 from PIL import Image, ImageTk
-import threading
 
 class TelloApp:
     def __init__(self):
         self.root = TK.Tk()
         self.root.title("Tello Drone Control")
-
-        # self.input_frame = TK.Frame(self.root)
 
         self.tello = tello.Tello()
         self.tello.connect()
@@ -20,6 +16,10 @@ class TelloApp:
         self.tello.streamon()
 
         self.frame_read = self.tello.get_frame_read()
+
+        #sets camera forward
+        self.tello.CAMERA_FORWARD
+        self.camera_down = False
 
         # Create a canvas for video feed
         self.canvas = TK.Canvas(self.root, width=640, height=480)
@@ -61,6 +61,22 @@ class TelloApp:
 
         self.off_button = TK.Button(self.root, text="Emergency Stop", command=self.turn_off)
         self.off_button.grid(column=1, row=4)
+
+        # Create a new button for switching the camera direction
+        self.camera_dir_button = TK.Button(self.root, text="Switch Camera", command=lambda: self.set_camera_direction())
+        self.camera_dir_button.grid(column=0, row=4)
+
+    #makes a camera toggle, so it can switch between the cameras
+    def set_camera_direction(self):
+        if self.camera_down:
+            self.camera_down = False
+            self.tello.set_video_direction(self.tello.CAMERA_FORWARD)
+            print(self.tello.CAMERA_FORWARD)
+        else:
+            self.camera_down = True
+            self.tello.set_video_direction(self.tello.CAMERA_DOWNWARD)
+            print(self.tello.CAMERA_DOWNWARD)
+
     
     def takeoff(self):
         self.tello.takeoff()
@@ -93,13 +109,18 @@ class TelloApp:
         self.tello.rotate_counter_clockwise(45)  # Rotate counter-clockwise 45 degrees
 
     def go(self):
-        self.tello.go_xyz_speed(0, 50, 0, 100)  # Example movement
+        self.tello.go_xyz_speed(50, 50, 50, 100)  # Example movement
 
     def turn_off(self):
         self.tello.emergency()  # Use emergency stop
 
     def update_video(self):
         img = self.frame_read.frame
+        
+        #resize and rotate the camera if we are using the down camera
+        if self.camera_down:
+            img = cv2.resize(img, [640, 480])
+            img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
         
         new_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
@@ -112,9 +133,6 @@ class TelloApp:
     
     def run_app(self):
         try:
-            # Pack the hidden frame and give direct input focus to it.
-            # self.input_frame.focus_set()
-
             self.update_video()  # Start the video feed update
             self.root.mainloop()  # Start the tkinter main loop
         except Exception as e:
@@ -125,6 +143,11 @@ class TelloApp:
     def cleanup(self) -> None:
         try:
             print("Cleaning up resources...")
+
+            #reset the camrea to forward
+            if self.camera_down:
+                self.tello.set_video_direction(self.tello.CAMERA_FORWARD)
+
             self.tello.end()
             self.root.quit()  # Quit the Tkinter main loop
             exit()

@@ -124,21 +124,22 @@ py.exe -3.9 -m pip install venv
    ```
    python -m pip install -r requirements.txt
    ```
-
-6. **Connect to the DJI Tello Drone**  
-   - Turn on the **DJI Tello drone**  
-   - Connect your device to the **WiFi network** (e.g., `"TELLO-######"`)
-
 ---
 
 ## Running the Program
+ **Connect to the DJI Tello Drone**  
+   - Turn on the **DJI Tello drone**  
+   - Connect your device to the **WiFi network** (e.g., `"TELLO-######"`)
+   
  **MacOS**
 ```
+cd examples
 python3 gui.py
 ```
 
  **Windows**
 ```
+cd examples
 ./gui.py
 ```
 ---

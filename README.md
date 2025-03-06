@@ -23,7 +23,7 @@ python3 -m pip install --upgrade pip==25.0.1
 ```
 
  **Windows**
-```powershell
+```
 python -m pip install --upgrade pip==25.0.1
 ```
 

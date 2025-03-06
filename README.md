@@ -1,7 +1,7 @@
 # Spots Aerial Assistant
 
 ## Clone the Repository
-```bash
+```
 git clone https://github.com/EliWuerth/Spots_Aerial_Assistant.git
 ```
 
@@ -18,7 +18,7 @@ Download and install it from:
 Ensure `pip` is updated to version **25.0.1**:
 
  **MacOS**
-```bash
+```
 python3 -m pip install --upgrade pip==25.0.1
 ```
 
@@ -31,12 +31,12 @@ python -m pip install --upgrade pip==25.0.1
 
 ## Install Virtual Environment (`venv`)
  **MacOS**
-```bash
+```
 python3 -m pip install venv
 ```
 
  **Windows**
-```powershell
+```
 py.exe -3.9 -m pip install venv
 ```
 

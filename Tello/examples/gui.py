@@ -21,6 +21,9 @@ class TelloApp:
         self.tello.CAMERA_FORWARD
         self.camera_down = False
 
+        # Load camera calibration data
+        self.camera_matrix, self.dist_coeffs = self.load_camera_calibration('calibration_matrix.yaml')
+
         # Create a canvas for video feed
         self.canvas = TK.Canvas(self.root, width=640, height=480)
         self.canvas.grid(column=1, row=1)
@@ -65,6 +68,12 @@ class TelloApp:
         # Create a new button for switching the camera direction
         self.camera_dir_button = TK.Button(self.root, text="Switch Camera", command=lambda: self.set_camera_direction())
         self.camera_dir_button.grid(column=0, row=4)
+
+    def load_camera_calibration(self, file_path):
+        """ Load camera calibration data from YAML file. """
+        with open(file_path, 'r') as file:
+            data = yaml.safe_load(file)
+        return np.array(data['camera_matrix']), np.array(data['dist_coeff'][0])
 
     #makes a camera toggle, so it can switch between the cameras
     def set_camera_direction(self):
@@ -121,11 +130,16 @@ class TelloApp:
         if self.camera_down:
             img = cv2.resize(img, [640, 480])
             img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-        
-        new_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        frames = cv2.cvtColor(new_frame, cv2.COLOR_RGB2BGR)
-        newimg = Image.fromarray(frames)
+        # **Apply Undistortion**
+        undistorted_img = cv2.undistort(img, self.camera_matrix, self.dist_coeffs)
+
+        # Convert for Tkinter
+        new_frame = cv2.cvtColor(undistorted_img, cv2.COLOR_BGR2RGB)
+        # new_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # frames = cv2.cvtColor(new_frame, cv2.COLOR_RGB2BGR)
+        newimg = Image.fromarray(new_frame)
         imgtk = ImageTk.PhotoImage(image=newimg)
         self.canvas.create_image(0, 0, anchor=TK.NW, image=imgtk)
         self.canvas.imgtk = imgtk  # Keep a reference to avoid garbage collection

@@ -24,58 +24,70 @@ class TelloApp:
         self.camera_down = False
 
         # Load camera calibration data
-        self.camera_matrix, self.dist_coeffs = self.load_camera_calibration('calibration_matrix.yaml')
+        # self.camera_matrix, self.dist_coeffs = self.load_camera_calibration('calibration_matrix.yaml')
 
         # Create a canvas for video feed
-        self.canvas = TK.Canvas(self.root, width=640, height=480)
-        self.canvas.grid(column=1, row=1)
+        self.canvas = TK.Canvas(self.root, width=640, height=480, bg='black')
+        self.canvas.grid(column=0, row=0, columnspan=6, padx=10, pady=10)
 
-        # Create control buttons
-        self.takeoff_button = TK.Button(self.root, text="Take Off", command=self.takeoff)
-        self.takeoff_button.grid(column=0, row=0)
+        # Create control buttons with uniform size and padding
+        button_options = {'padx': 10, 'pady': 10, 'width': 12}
 
-        self.land_button = TK.Button(self.root, text="Land", command=self.land)
-        self.land_button.grid(column=1, row=0)
+        # Column 1
+        self.takeoff_button = TK.Button(self.root, text="Take Off", command=self.takeoff, **button_options)
+        self.takeoff_button.grid(column=0, row=1)
 
-        self.forward_button = TK.Button(self.root, text="Forward", command=self.move_forward)
-        self.forward_button.grid(column=1, row=2)
+        self.land_button = TK.Button(self.root, text="Land", command=self.land, **button_options)
+        self.land_button.grid(column=0, row=2)
 
-        self.backward_button = TK.Button(self.root, text="Backward", command=self.move_backward)
-        self.backward_button.grid(column=1, row=3)
+        self.camera_dir_button = TK.Button(self.root, text="Switch Camera", command=self.set_camera_direction, **button_options)
+        self.camera_dir_button.grid(column=0, row=5)
 
-        self.left_button = TK.Button(self.root, text="Left", command=self.move_left)
-        self.left_button.grid(column=0, row=2)
+        # Column 2
 
-        self.right_button = TK.Button(self.root, text="Right", command=self.move_right)
-        self.right_button.grid(column=2, row=2)
+        self.off_button = TK.Button(self.root, text="Emergency Stop", command=self.turn_off, **button_options)
+        self.off_button.grid(column=1, row=5)
 
-        self.up_button = TK.Button(self.root, text="Up", command=self.move_up)
-        self.up_button.grid(column=0, row=1)
+        # Column 3
+        self.forward_button = TK.Button(self.root, text="Forward", command=self.move_forward, **button_options)
+        self.forward_button.grid(column=2, row=3)
 
-        self.down_button = TK.Button(self.root, text="Down", command=self.move_down)
-        self.down_button.grid(column=0, row=3)
+        self.backward_button = TK.Button(self.root, text="Backward", command=self.move_backward, **button_options)
+        self.backward_button.grid(column=2, row=4)
 
-        self.clockwise_button = TK.Button(self.root, text="Clockwise", command=self.clockwise)
-        self.clockwise_button.grid(column=2, row=0)
+        # Column 4
+        self.left_button = TK.Button(self.root, text="Left", command=self.move_left, **button_options)
+        self.left_button.grid(column=3, row=2)
+        
+        self.clockwise_button = TK.Button(self.root, text="Clockwise", command=self.clockwise, **button_options)
+        self.clockwise_button.grid(column=3, row=1)
 
-        self.counter_clockwise_button = TK.Button(self.root, text="Counter-Clockwise", command=self.counter_clockwise)
-        self.counter_clockwise_button.grid(column=2, row=1)
+        # Column 5
+        self.up_button = TK.Button(self.root, text="Up", command=self.move_up, **button_options)
+        self.up_button.grid(column=4, row=1)
 
-        self.go_button = TK.Button(self.root, text="Go", command=self.go)
-        self.go_button.grid(column=2, row=3)
+        self.go_button = TK.Button(self.root, text="Go", command=self.go, **button_options)
+        self.go_button.grid(column=4, row=2)
+        
+        self.down_button = TK.Button(self.root, text="Down", command=self.move_down, **button_options)
+        self.down_button.grid(column=4, row=3)
 
-        self.off_button = TK.Button(self.root, text="Emergency Stop", command=self.turn_off)
-        self.off_button.grid(column=1, row=4)
+        # Column 6
+        self.counter_clockwise_button = TK.Button(self.root, text="Counter-Clockwise", command=self.counter_clockwise, **button_options)
+        self.counter_clockwise_button.grid(column=5, row=1)
+        
+        self.right_button = TK.Button(self.root, text="Right", command=self.move_right, **button_options)
+        self.right_button.grid(column=5, row=2)
 
-        # Create a new button for switching the camera direction
-        self.camera_dir_button = TK.Button(self.root, text="Switch Camera", command=lambda: self.set_camera_direction())
-        self.camera_dir_button.grid(column=0, row=4)
+        # Adjust grid weights for better resizing behavior
+        for i in range(6):
+            self.root.grid_columnconfigure(i, weight=1)
 
-    def load_camera_calibration(self, file_path):
-        """ Load camera calibration data from YAML file. """
-        with open(file_path, 'r') as file:
-            data = yaml.safe_load(file)
-        return np.array(data['camera_matrix']), np.array(data['dist_coeff'][0])
+    # def load_camera_calibration(self, file_path):
+    #     """ Load camera calibration data from YAML file. """
+    #     with open(file_path, 'r') as file:
+    #         data = yaml.safe_load(file)
+    #     return np.array(data['camera_matrix']), np.array(data['dist_coeff'][0])
 
     #makes a camera toggle, so it can switch between the cameras
     def set_camera_direction(self):
@@ -134,14 +146,14 @@ class TelloApp:
             img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
 
         # **Apply Undistortion**
-        undistorted_img = cv2.undistort(img, self.camera_matrix, self.dist_coeffs)
+        # undistorted_img = cv2.undistort(img, self.camera_matrix, self.dist_coeffs)
 
         # Convert for Tkinter
-        new_frame = cv2.cvtColor(undistorted_img, cv2.COLOR_BGR2RGB)
-        # new_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # new_frame = cv2.cvtColor(undistorted_img, cv2.COLOR_BGR2RGB)
+        new_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # frames = cv2.cvtColor(new_frame, cv2.COLOR_RGB2BGR)
-        newimg = Image.fromarray(new_frame)
+        frames = cv2.cvtColor(new_frame, cv2.COLOR_RGB2BGR)
+        newimg = Image.fromarray(frames)
         imgtk = ImageTk.PhotoImage(image=newimg)
         self.canvas.create_image(0, 0, anchor=TK.NW, image=imgtk)
         self.canvas.imgtk = imgtk  # Keep a reference to avoid garbage collection

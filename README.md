@@ -140,7 +140,7 @@ python3 gui.py
  **Windows**
 ```
 cd examples
-./gui.py
+python gui.py
 ```
 ---
 

@@ -1,21 +1,14 @@
 import cv2
 import numpy as np
-from djitellopy import tello
+from djitellopy import Tello
+import cv2.aruco as aruco
+import time
 
-class TelloApp:
-    def __init__(self):
+class TelloMarkerController:
+    def __init__(self,tello):
         # Initialize the Tello drone
-        self.tello = tello.Tello()
-        self.tello.connect()
-        print("Tello connected!")
-
-        # Start video stream
-        self.tello.streamon()
-        print("Video stream started.")
-        self.camera_down = True
-        self.frame_read = self.tello.get_frame_read()
-        print("Battery percentage:", self.tello.get_battery())
-
+        self.tello = tello
+        
         # Load the ArUco dictionary and create the detector
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50)
         self.parameters = cv2.aruco.DetectorParameters()
@@ -24,100 +17,96 @@ class TelloApp:
     def detect_marker(self, frame):
         if frame is None or len(frame.shape) < 3:
             print("Invalid frame received.")
-            return False, None
+            return None, None
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
-        corners, ids, rejected = detector.detectMarkers(gray)
         
-        if ids is not None and self.marker_id_to_detect in ids:
-            # Draw detected markers
-            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-            return True, corners
-        return False, None
+        corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(gray, self.aruco_dict, parameters=self.parameters)
+
+        return corners, ids
+
+    def move_to_marker(self, frame):
+        corners, ids = self.detect_marker(frame)
+
+        if ids is not None and len(ids) > 0:
+            for i in range(len(ids)):
+                # Draw the detected markers
+                cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+
+                # Calculate the center of the marker
+                c = corners[i][0]
+                center_x = int((c[0][0] + c[2][0]) / 2)
+                center_y = int((c[0][1] + c[2][1]) / 2)
+                print(f"Center: ({center_x}, {center_y})")
+
+                # Move the drone towards the marker
+                if ids[i][0] == self.marker_id_to_detect:  # Assuming the origin marker has the specified ID
+                    # Calculate the distance to the center of the marker
+                    dx = center_x - 320  # Center of the frame (640x480)
+                    dy = center_y - 240
+
+                    # Clamp dx and dy to a maximum movement range
+                    max_move = 50  # Maximum movement in cm
+                    dx = int(max(max_move, min(max_move, dx // 10))) # Scale and clamp dx
+                    dy = int(max(max_move, min(max_move, dy // 10)))  # Scale and clamp dy
+                    dx=abs(dx)
+                    dy=abs(dy)
+
+                    # Calculate speed based on distance
+                    distance = np.sqrt(dx**2 + dy**2)
+                    speed = min(100, max(20, int(distance / 10)))  # Speed between 20 and 100 cm/s
+
+                    # Log the values for debugging
+                    print(f"Marker ID: {ids[i][0]}, Center: ({center_x}, {center_y}), dx: {dx}, dy: {dy}, speed: {speed}")
+
+                    # Move the drone
+                    self.tello.go_xyz_speed(dx, dy, 0, 10)  # Send the command
+
+        return frame  # Return the frame for display
     
-    def move_to_marker(self, corners):
-        # Calculate the center of the detected marker
-        center_x = int((corners[0][0][0][0] + corners[0][0][2][0]) / 2)
-        center_y = int((corners[0][0][0][1] + corners[0][0][2][1]) / 2)
-
-        # Get the frame dimensions
-        frame_width = 320  # Adjust based on your resizing
-        frame_height = 240  # Adjust based on your resizing
-
-        # Calculate the offset from the center of the frame
-        offset_x = center_x - (frame_width / 2)
-        offset_y = center_y - (frame_height / 2)
-
-        # Define movement parameters
-        move_threshold = 20  # Threshold for movement
-        move_distance = 20  # Base distance to move
-        speed_factor = 0.5  # Speed adjustment factor
-
-        # Move the drone based on the offset
-        if abs(offset_x) > move_threshold:  # Threshold to avoid small movements (Horizontal)
-            move_x = int(move_distance * (abs(offset_x) / (frame_width / 2)) * speed_factor)
-            if offset_x > 0:
-                self.tello.move_right(move_x)  # Move right
-            else:
-                self.tello.move_left(move_x)  # Move left
-
-        if abs(offset_y) > move_threshold:  # Threshold to avoid small movements (Vertical)
-            move_y = int(move_distance * (abs(offset_y) / (frame_height / 2)) * speed_factor)
-            if offset_y > 0:
-                self.tello.move_down(move_y)  # Move down
-            else:
-                self.tello.move_up(move_y)  # Move up
-
-        # Move forward if the marker is too far away
-        if abs(offset_x) < move_threshold and abs(offset_y) < move_threshold:
-            self.tello.move_forward(20)  # Move forward if close to the center
-
-    def run(self):
-        print("Taking off...")
+    def land_on_marker(self):
+        # Start the drone
         self.tello.takeoff()
-        self.tello.set_video_direction(self.tello.CAMERA_DOWNWARD)
-        # self.tello.set_video_resolution(self.tello.RESOLUTION_720P)
-        
-        try:
-            while True:
-                img = self.frame_read.frame
+        time.sleep(2)  # Wait for the drone to take off
 
-                if self.camera_down:
-                    img = cv2.resize(img, [320, 240])
-                    img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        while True:
+            frame = self.tello.get_frame_read().frame
+            updated_frame = self.move_to_marker(frame)
 
-                marker_detected, corners = self.detect_marker(img)
-                
-                # Display the frame
-                cv2.imshow("Tello Video Feed", img)
+            # Display the frame
+            cv2.imshow("Tello Video Stream", updated_frame)
 
-                marker_detected, corners = self.detect_marker(img)
+            # Check if the drone is close enough to the marker to land
+            if self.is_close_to_marker(updated_frame):
+                print("Landing on marker...")
+                self.tello.land()
+                break
 
-                if (marker_detected):
-                    self.move_to_marker(corners)
-                    print("Moving to marker center...")
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-                    # Check if the drone is close enough to the marker
-                    if abs(corners[0][0][0][0] - corners[0][0][2][0]) < 50 and abs(corners[0][0][0][1] - corners[0][0][2][1]) < 50:
-                        print("Marker center reached! Landing...")
-                        self.tello.land()
-                        break
+        cv2.destroyAllWindows()
 
-                # Exit on 'q' key
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    print("Landing due to user command.")
-                    self.tello.land()
-                    break
+    def is_close_to_marker(self, frame):
+        # Implement logic to determine if the drone is close enough to the marker
+        # For example, you can check the size of the detected marker or the distance
+        corners, ids = self.detect_marker(frame)
+        if ids is not None and len(ids) > 0:
+            for i in range(len(ids)):
+                if ids[i][0] == self.marker_id_to_detect:
+                    # Check the size of the marker or its position
+                    return True  # Return True if close enough
+        return False  # Return False if not close enough
 
-        except Exception as e:
-            print(f"An error occurred: {e}")
-        finally:
-            self.tello.end()
-            
-            cv2.destroyAllWindows()
-            print("Program ended.")
+    def cleanup(self):
+        self.tello.set_video_direction(self.tello.CAMERA_FORWARD)
+        self.tello.end()
+        cv2.destroyAllWindows()
+        exit()
 
 if __name__ == "__main__":
-    app = TelloApp()
-    app.run()
+    controller = TelloMarkerController()
+    try:
+        controller.run()
+    except KeyboardInterrupt:
+        cv2.destroyAllWindows()

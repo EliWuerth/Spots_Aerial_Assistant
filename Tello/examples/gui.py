@@ -212,9 +212,47 @@ class TelloApp:
                         self.tello.land()
                         self.tracking = False  # Stop tracking after landing
 
-        
-
         time.sleep(0.1)  # Adjust the sleep time as necessary
+
+        """def track_aruco_marker(self):
+        #Track the ArUco marker and land when centered and close enough.
+            p_error = 0
+            pid = [0.1, 0.01, 0.1]  # Adjust for your drone's behavior
+            landing_area_threshold = 8000  # Tune this value based on testing
+            center_tolerance = 40  # Acceptable pixel range from center
+   
+            while self.tracking:
+                img = self.frame_read.frame
+                if img is None:
+                    continue
+
+            # ArUco detection
+                info, area, img_with_markers = self.center_controller.find_aruco(img)
+                cx, cy = info
+                frame_center = img.shape[1] // 2
+
+            # Update display
+                img_rgb = cv2.cvtColor(img_with_markers, cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(img_rgb).resize((640, 480))
+                imgtk = ImageTk.PhotoImage(img_pil)
+                self.video_label.config(image=imgtk)
+                self.video_label.image = imgtk
+
+            # PID control for centering
+                yaw_velocity, p_error = self.center_controller.track_aruco(info, img.shape[1], pid, p_error)
+                if abs(cx - frame_center) > center_tolerance:
+                    self.tello.send_rc_control(0, 0, 0, yaw_velocity)
+                else:
+                    self.tello.send_rc_control(0, 0, 0, 0)
+
+            # If the marker is large enough and centered, land
+                if area > landing_area_threshold and abs(cx - frame_center) <= center_tolerance:
+                    print("Marker centered and close! Landing...")
+                    self.tello.land()
+                    self.tracking = False
+                    break
+
+                time.sleep(0.1)"""
 
     def detect_and_land(self):
         """Detect the mission pad and land on it if pad #1 is detected."""

@@ -1,145 +1,301 @@
+import cv2
+import time
+import numpy as np
 import tkinter as tk
-from tkinter import *
-from tkinter import messagebox
-import random
-from tkinter import simpledialog
-from PIL import Image, ImageTk
+import cv2.aruco as aruco
+from djitellopy import Tello
 
-class TelloDroneGUISimulator:
-    def __init__(self, master):
-        self.master = master
-        master.title("Tello Drone Control Simulator")
+# Constants
+SPEED = 60
+PID = [0.3, 0.0005, 0.1]  # Reduced proportional gain
+LANDING_THRESHOLD = 1500  # Increased to avoid premature landing
+DISTANCE_THRESHOLD = 20  # Distance threshold for moving forward
 
-        # Load background image
-        self.background_image = Image.open("Images/Gold-Brayer2.png")  # Replace with your image file
-        self.background_image = self.background_image.resize((800, 800), Image.ANTIALIAS)  # Resize to fit the window
-        self.background_photo = ImageTk.PhotoImage(self.background_image)
+# Global variables
+drone = Tello()
+face_tracking = False
+body_tracking = False
+aruco_tracking = False
+camera_down = False
+pError = 0
+aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_6X6_50)
+aruco_params = aruco.DetectorParameters()
 
-        # Create a canvas to hold the background image
-        self.canvas = tk.Canvas(master, width=800, height=650, highlightcolor='gold')
-        self.canvas.pack(fill="both", expand=True)
+# Takeoff function
+def safe_takeoff():
+    try:
+        drone.takeoff()
+        print("Takeoff successful!")
+        return True
+    except Exception as e:
+        print(f"Takeoff error: {e}")
+        return False
 
-        # Set the background image on the canvas
-        self.canvas.create_image(0, 0, image=self.background_photo, anchor="nw")
+# Function to switch camera direction
+def set_camera_direction():
+    global camera_down
+    if camera_down:
+        camera_down = False
+        drone.set_video_direction(drone.CAMERA_FORWARD)
+    else:
+        camera_down = True
+        drone.set_video_direction(drone.CAMERA_DOWNWARD)
 
-        # Create a frame for the controls
-        self.control_frame = tk.Frame(master, bd=1)
-        self.control_frame.place(relx=0.5, rely=0.8, anchor="center")  # Center the control frame
+# Toggle tracking modes
+def toggle_tracking(mode):
+    global face_tracking, aruco_tracking
+    if mode == 'aruco':
+        aruco_tracking = not aruco_tracking
+        print(f"Aruco tracking: {'ON' if aruco_tracking else 'OFF'}")
 
-        # Video stream placeholder
-        self.video_frame = tk.Frame(master, width=800, height=650, highlightbackground='yellow')
-        self.video_frame.place(relx=0.5, rely=0.5, anchor="center")  # Center the video frame
+# ArUco detection function
+def find_aruco(img):
+    global aruco_tracking
 
-        button_options = {'padx': 8, 'pady': 8, 'width': 10}
+    if not aruco_tracking:
+        return [0, 0], 0, img  # Return default values when not tracking
 
-        # Placeholder for video stream
-        self.video_label = tk.Label(self.video_frame, text="Video Stream Placeholder", fg="black", font=("Arial", 24))
-        self.video_label.pack(expand=True, fill=tk.BOTH)
+    # Convert to grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Add buttons for vertical movement
-        self.up_button = tk.Button(self.control_frame, text="Up", command=self.move_up, **button_options)
-        self.up_button.grid(row=0, column=1)
+    # Detect ArUco markers
+    corners, ids, _ = aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
 
-        self.down_button = tk.Button(self.control_frame, text="Down", command=self.move_down, **button_options)
-        self.down_button.grid(row=2, column=1)
+    # Process detected markers
+    if ids is not None and len(ids) > 0:
+        # Draw detected markers
+        aruco.drawDetectedMarkers(img, corners, ids)
 
-        # Add buttons for horizontal movement
-        self.left_button = tk.Button(self.control_frame, text="Left", command=self.move_left, **button_options)
-        self.left_button.grid(row=1, column=4)
+        # Get the center of the first detected marker
+        c = corners[0][0]
+        cx = int(np.mean(c[:, 0]))
+        cy = int(np.mean(c[:, 1]))
 
-        self.right_button = tk.Button(self.control_frame, text="Right", command=self.move_right, **button_options)
-        self.right_button.grid(row=1, column=6)
+        # Calculate area by finding the area of the quadrilateral
+        area = cv2.contourArea(c.astype(np.float32))
 
-        # Add buttons for forward and backward movement
-        self.forward_button = tk.Button(self.control_frame, text="Forward", command=self.move_forward, **button_options)
-        self.forward_button.grid(row=0, column=5)
+        # Mark center of marker
+        cv2.circle(img, (cx, cy), 5, (0, 255, 255), cv2.FILLED)
 
-        self.backward_button = tk.Button(self.control_frame, text="Backward", command=self.move_backward, **button_options)
-        self.backward_button.grid(row=2, column=5)
+        return [cx, cy], area, img
+    else:
+        return [0, 0], 0, img  # No marker detected
 
-        # Add buttons for takeoff, landing, and other controls
-        self.takeoff_button = tk.Button(self.control_frame, text="Take Off",  highlightbackground='green3', command=self.take_off, **button_options)
-        self.takeoff_button.grid(row=0, column=3)
+# Tracking function for ArUco
+def track_aruco(info, width, pid, p_error):
+    global aruco_tracking
 
-        self.land_button = tk.Button(self.control_frame, text="Land", highlightbackground='yellow', command=self.land, **button_options)
-        self.land_button.grid(row=1, column=3)
+    if not aruco_tracking or info[0] == 0:
+        return 0, p_error  # Don't track if disabled or no marker
 
-        # Add new buttons for rotation and emergency stop
-        self.clockwise_button = tk.Button(self.control_frame, text="Spin Right", command=self.rotate_clockwise, **button_options)
-        self.clockwise_button.grid(row=1, column=2)
+    # Calculate error from center
+    error = info[0] - width // 2
 
-        self.counter_clockwise_button = tk.Button(self.control_frame, text="Spin Left", command=self.rotate_counter_clockwise, **button_options)
-        self.counter_clockwise_button.grid(row=1, column=0)
+    # PID calculation
+    p = pid[0] * error
+    i = pid[1] * (error + p_error)
+    d = pid[2] * (error - p_error)
 
-        self.emergency_stop_button = tk.Button(self.control_frame, text="Emergency Stop", highlightbackground='red3', command=self.emergency_stop, **button_options)
-        self.emergency_stop_button.grid(row=3, column=3)  # Span across three columns
+    # Calculate yaw velocity
+    yaw_velocity = int(p + i + d)
 
-        # Add "Go To" button
-        self.go_to_button = tk.Button(self.control_frame, text="Go To", highlightbackground='medium purple', command=self.go_to, **button_options)
-        self.go_to_button.grid(row=2, column=3)  # Span across three columns
+    # Limit yaw velocity
+    yaw_velocity = max(min(yaw_velocity, SPEED), -SPEED)
 
-        # Battery status label
-        self.battery_label = tk.Label(master, text="Battery: 100%", bg="white")
-        self.battery_label.place(relx=0.5, rely=0.05, anchor="center")  # Center the battery label at the top
+    return yaw_velocity, error
 
-        # Camera switch button
-        self.camera_button = tk.Button(master, text="Switch Camera", highlightbackground="gold", command=self.switch_camera, **button_options)
-        self.camera_button.place(relx=0.5, rely=0.1, anchor="center")  # Center the camera button below the battery label
+#Function to approach and land on the ArUco marker
+def go_to_aruco_and_land():
+    global aruco_tracking, pError
+    aruco_tracking = True  # Enable ArUco tracking
+    last_seen_time = time.time()
+    landed = False
+    marker_lost = False
+    drone.send_rc_control(0, 0, 0, 0)
+    time.sleep(0.5)
 
-        # Simulate battery status updates
-        self.update_battery_status()
-        
-    def go_to(self):
-        location = simpledialog.askstring("Go To", "Enter the location (e.g., x,y):")
-        if location:
-            self.update_status(f"Drone moving to {location}...")
-        
-    def rotate_clockwise(self):
-        self.update_status("Drone rotating clockwise...")
+    while not landed:
+        try:
+            # Get the frame from the drone's camera
+            frame = drone.get_frame_read().frame
+            if frame is None:
+                continue
+                
+            frame = cv2.resize(frame, (640, 480))
+            aruco_info, area, processed_frame = find_aruco(frame)
 
-    def rotate_counter_clockwise(self):
-        self.update_status("Drone rotating counter-clockwise...")
+            # Marker tracking logic
+            if aruco_info[0] != 0:
+                last_seen_time = time.time()
+                cx, cy = aruco_info
+                error_x = cx - frame.shape[1] // 2
+                error_y = cy - frame.shape[0] // 2
 
-    def emergency_stop(self):
-        self.update_status("Emergency stop activated!")
+                # PID calculations
+                yaw_velocity, pError = track_aruco(aruco_info, frame.shape[1], PID, pError)
+                
+                # Forward control
+                forward_speed = max(30, int(SPEED * (1 - min(area / (LANDING_THRESHOLD * 1.5), 1))))
+                
+                # Vertical adjustment based on vertical position
+                vertical_speed = int(PID[0] * error_y)
+                
+                # Only move forward if marker is roughly centered (error within threshold)
+                if abs(error_x) > DISTANCE_THRESHOLD:
+                    drone.send_rc_control(0, forward_speed, -vertical_speed, yaw_velocity)
+                    time.sleep(1)
 
-    def take_off(self):
-        self.update_status("Drone taking off...")
+                print(f"Area: {area}, Forward: {forward_speed}, Vertical: {vertical_speed}, Yaw: {yaw_velocity}")
+                
+            else:
+                # Lost marker handling
+                if time.time() - last_seen_time > 2 and not marker_lost:  # 2 seconds without marker
+                    marker_lost = True  # Prevent re-execution
+                    print("Marker lost - hovering")
+                    
+                    # Hover in place
+                    drone.send_rc_control(0, 0, 0, 0)
+                    time.sleep(1)
 
-    def land(self):
-        self.update_status("Drone landing...")
+                    # Set camera direction downward
+                    drone.set_video_direction(drone.CAMERA_DOWNWARD)
+                    time.sleep(1)  # Allow time for camera switch
 
-    def move_forward(self):
-        self.update_status("Drone moving forward...")
+                    # Re-check for the marker from top view
+                    frame = drone.get_frame_read().frame
+                    if frame is not None:
+                        frame = cv2.resize(frame, (640, 480))
+                        aruco_info, area, processed_frame = find_aruco(frame)
 
-    def move_backward(self):
-        self.update_status("Drone moving backward...")
+                        cx, cy = aruco_info
+                        error_x = cx - frame.shape[1] // 2
+                        error_y = cy - frame.shape[0] // 2
 
-    def move_left(self):
-        self.update_status("Drone moving left...")
+                        # Check if the marker is centered and within landing threshold
+                        if area > LANDING_THRESHOLD and abs(aruco_info[0] - frame.shape[1] // 2) < 20 and abs(aruco_info[1] - frame.shape[0] // 2) < 20:
+                            print("Marker detected directly below - landing")
+                            drone.send_rc_control(0, 0, 0, 0)  # Stop motion
+                            time.sleep(0.5)
+                            drone.land()
+                            aruco_tracking = False
+                            return  # Exit function after landing
+                        else:
+                            print("Marker not directly below - hovering")
+                            vertical_speed = int(PID[0] * error_y)
 
-    def move_right(self):
-        self.update_status("Drone moving right...")
+                            drone.send_rc_control(0, 0, 0, 0)  # Hover
 
-    def move_up(self):
-        self.update_status("Drone moving up...")
+            # Display the processed frame
+            processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+            if camera_down != False:
+                processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_90_CLOCKWISE)
+            cv2.imshow("Drone Feed", processed_frame)
+            
+            # Check for GUI events
+            # Ensure root exists before updating
+            if root.winfo_exists():
+                root.update_idletasks()
+                root.update()
+            else:
+                print("Tkinter GUI closed. Stopping GUI updates.")
+                break  # Stop loop if the window is destroyed
+        except Exception as e:
+            print(f"Error updating GUI: {e}")
+            drone.land()
+            break  # Break out of the loop to prevent infinite errors
 
-    def move_down(self):
-        self.update_status("Drone moving down...")
+        # Exit on 'q' key press
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            drone.land()
+            drone.streamoff()
+            break
 
-    def switch_camera(self):
-        self.update_status("Camera switched.")
+    pError = 0  # Reset PID error
+    aruco_tracking = False
+    cv2.destroyAllWindows()
 
-    def update_status(self, message):
-        messagebox.showinfo("Status", message)
-
-    def update_battery_status(self):
-        # Simulate battery percentage
-        battery_percentage = random.randint(0, 100)
-        self.battery_label.config(text=f"Battery: {battery_percentage}%")
-        self.master.after(5000, self.update_battery_status)  # Update every 5 seconds
-
-if __name__ == "__main__":
+# Tkinter GUI
+def create_gui():
+    global battery_label, temperature_label
     root = tk.Tk()
-    app = TelloDroneGUISimulator(root)
-    root.mainloop()
+    root.title("Tello Drone Controller")
+    
+    tk.Button(root, text="Takeoff", command=safe_takeoff).pack()
+    tk.Button(root, text="Land", command=drone.land).pack()
+    tk.Button(root, text="Forward", command=lambda: drone.move_forward(30)).pack()
+    tk.Button(root, text="Backward", command=lambda: drone.move_back(30)).pack()
+    tk.Button(root, text="Left", command=lambda: drone.move_left(30)).pack()
+    tk.Button(root, text="Right", command=lambda: drone.move_right(30)).pack()
+    tk.Button(root, text="Up", command=lambda: drone.move_up(30)).pack()
+    tk.Button(root, text="Down", command=lambda: drone.move_down(30)).pack()
+    tk.Button(root, text="Rotate Left", command=lambda: drone.rotate_counter_clockwise(30)).pack()
+    tk.Button(root, text="Rotate Right", command=lambda: drone.rotate_clockwise(30)).pack()
+    tk.Button(root, text="Toggle Aruco Tracking", command=lambda: toggle_tracking('aruco')).pack()
+    tk.Button(root, text="Go to ArUco and Land", command=go_to_aruco_and_land).pack()
+    tk.Button(root, text="Switch Camera", highlightbackground="gold", command=lambda: set_camera_direction()).pack()
+    
+    # Labels to display battery status and temperature
+    battery_label = tk.Label(root, text="Battery: 100%")
+    battery_label.pack(pady=5)
+    
+    temperature_label = tk.Label(root, text="Temperature: 25°C")
+    temperature_label.pack(pady=5)
+
+    return root
+
+# Function to update battery status and temperature
+def update_drone_status():
+    try:
+        battery_label.config(text=f"Battery: {drone.get_battery()}%")  # Update battery label
+        temperature_label.config(text=f"Temperature: {drone.get_temperature()}°C")  # Update temperature label
+    except Exception as e:
+        print(f"Error retrieving drone status: {e}")
+    
+    # Schedule the next update
+    root.after(100, update_drone_status)  # Update every second
+
+# Main loop for processing video stream
+def process_video():
+    global pError
+    drone.send_rc_control(0, 0, 0, 0)
+    time.sleep(0.5)
+    while True:
+        # Get the frame from the drone's camera
+        frame = drone.get_frame_read().frame
+        frame = cv2.resize(frame, (640, 480))  # Resize for processing
+
+        # Find ArUco markers
+        aruco_info, area, processed_frame = find_aruco(frame)
+
+        # Display the processed frame
+        processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+        if camera_down != False:
+            processed_frame = cv2.resize(processed_frame, (640, 480))
+            processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_90_CLOCKWISE)
+        cv2.imshow("Drone Feed", processed_frame)
+
+        # Check for GUI events
+        root.update_idletasks()
+        root.update()
+
+        # Exit on 'q' key press
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    pError = 0  # ✅ Reset PID error before starting tracking loop
+    cv2.destroyAllWindows()
+
+# Initialize drone
+drone.connect()
+drone.streamon()
+drone.set_video_direction(drone.CAMERA_FORWARD)
+
+# Create GUI
+root = create_gui()
+update_drone_status()
+
+# Start video processing
+process_video()
+
+# Close the GUI
+root.destroy()

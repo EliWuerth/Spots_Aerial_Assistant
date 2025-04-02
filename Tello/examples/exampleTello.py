@@ -148,6 +148,13 @@ def go_to_aruco_and_land():
                 print(f"Area: {area}, Forward: {forward_speed}, Vertical: {vertical_speed}, Yaw: {yaw_velocity}")
                 
             else:
+                #############################
+                #      Problem Area         #
+                #############################
+
+                # front camera is to close and can't see the marker so  it  switches to the bottom camera but 
+                # its not over top the marker so the bottom camera can't see the marker
+
                 # Lost marker handling
                 if time.time() - last_seen_time > 2 and not marker_lost:  # 2 seconds without marker
                     marker_lost = True  # Prevent re-execution
@@ -157,39 +164,49 @@ def go_to_aruco_and_land():
                     drone.send_rc_control(0, 0, 0, 0)
                     time.sleep(1)
 
+                    # drone.send_rc_control(0, 0, 10, 0)
+                    
                     # Set camera direction downward
                     drone.set_video_direction(drone.CAMERA_DOWNWARD)
                     time.sleep(1)  # Allow time for camera switch
 
-                    # Re-check for the marker from top view
-                    frame = drone.get_frame_read().frame
-                    if frame is not None:
-                        frame = cv2.resize(frame, (640, 480))
-                        aruco_info, area, processed_frame = find_aruco(frame)
+                    drone.land()
+                    
+                    # aruco_tracking = False
+                    
+                    # if marker_lost != True:
+                    #     drone.land()
 
-                        cx, cy = aruco_info
-                        error_x = cx - frame.shape[1] // 2
-                        error_y = cy - frame.shape[0] // 2
+                    # # Re-check for the marker from top view
+                    # frame = drone.get_frame_read().frame
+                    # if frame is not None:
+                    #     frame = cv2.resize(frame, (640, 480))
+                    #     aruco_info, area, processed_frame = find_aruco(frame)
 
-                        # Check if the marker is centered and within landing threshold
-                        if area > LANDING_THRESHOLD and abs(aruco_info[0] - frame.shape[1] // 2) < 20 and abs(aruco_info[1] - frame.shape[0] // 2) < 20:
-                            print("Marker detected directly below - landing")
-                            drone.send_rc_control(0, 0, 0, 0)  # Stop motion
-                            time.sleep(0.5)
-                            drone.land()
-                            aruco_tracking = False
-                            return  # Exit function after landing
-                        else:
-                            print("Marker not directly below - hovering")
-                            vertical_speed = int(PID[0] * error_y)
+                    #     # cx, cy = aruco_info
+                    #     # error_x = cx - frame.shape[1] // 2
+                    #     # error_y = cy - frame.shape[0] // 2
 
-                            drone.send_rc_control(0, 0, 0, 0)  # Hover
+                    #     # Check if the marker is centered and within landing threshold
+                    #     if area > LANDING_THRESHOLD and abs(aruco_info[0] - frame.shape[1] // 2) < 30 and abs(aruco_info[1] - frame.shape[0] // 2) < 30:
+                    #         print("Marker detected directly below - landing")
+                    #         drone.send_rc_control(0, 0, 0, 0)  # Stop motion
+                    #         time.sleep(0.5)
+                    #         drone.land()
+                    #         aruco_tracking = False
+                    #         return  # Exit function after landing
+                    #     else:
+                    #         print("Marker not directly below - hovering")
+                    #         # vertical_speed = int(PID[0] * error_y)
+
+                    #         drone.send_rc_control(0, 0, 0, 0)  # Hover
 
             # Display the processed frame
             processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
             if camera_down != False:
                 processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_90_CLOCKWISE)
             cv2.imshow("Drone Feed", processed_frame)
+
             
             # Check for GUI events
             # Ensure root exists before updating
@@ -199,6 +216,7 @@ def go_to_aruco_and_land():
             else:
                 print("Tkinter GUI closed. Stopping GUI updates.")
                 break  # Stop loop if the window is destroyed
+
         except Exception as e:
             print(f"Error updating GUI: {e}")
             drone.land()

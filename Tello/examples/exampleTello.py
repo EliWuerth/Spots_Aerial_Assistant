@@ -2,6 +2,7 @@ import cv2
 import time
 import numpy as np
 import tkinter as tk
+from PIL import Image, ImageTk
 import cv2.aruco as aruco
 from djitellopy import Tello
 
@@ -30,6 +31,36 @@ def safe_takeoff():
     except Exception as e:
         print(f"Takeoff error: {e}")
         return False
+
+def land():
+    drone.land()
+
+def move_forward():
+    drone.move_forward(30)  # Move forward 30 cm
+
+def move_up():
+    drone.move_up(30)  # Move up 30 cm
+
+def move_down():
+    drone.move_down(30)  # Move down 30 cm
+
+def move_backward():
+    drone.move_back(30)  # Move backward 30 cm
+
+def move_left():
+    drone.move_left(30)  # Move left 30 cm
+
+def move_right():
+    drone.move_right(30)  # Move right 30 cm
+
+def rotate_clockwise():
+    drone.rotate_clockwise(45)  # Rotate clockwise 45 degrees
+
+def rotate_counter_clockwise():
+    drone.rotate_counter_clockwise(45)  # Rotate counter-clockwise 45 degrees
+
+def emergency_stop():
+    drone.emergency()  # Use emergency stop
 
 def send_tello_command(command, retries=3, timeout=5):
     for i in range(retries):
@@ -202,11 +233,11 @@ def go_to_aruco_and_land():
                         processed_frame = bottom_camera_and_land(img)
 
             # Display the processed frame
-            processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-            if camera_down != False:
-                processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_90_CLOCKWISE)
-            cv2.imshow("Drone Feed", processed_frame)
-            cv2.waitKey(1)
+            
+            # if camera_down != False:
+            #     processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_90_CLOCKWISE)
+            # cv2.imshow("Drone Feed", processed_frame)
+            # cv2.waitKey(1)
 
             # Check for GUI events
             # Ensure root exists before updating
@@ -214,21 +245,13 @@ def go_to_aruco_and_land():
                 root.update_idletasks()
                 root.update()
             else:
-                print("Tkinter GUI closed. Stopping GUI updates.")
+                print("tkinter GUI closed. Stopping GUI updates.")
                 break  # Stop loop if the window is destroyed
 
         except Exception as e:
             print(f"Error updating GUI line 202: {e}")
             drone.land()
             break  # Break out of the loop to prevent infinite errors
-
-        # Exit on 'q' key press
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            drone.land()
-            # Use this function instead of direct `drone.streamoff()`
-            send_tello_command('streamoff')
-            cv2.destroyAllWindows()
-            break
 
     pError = 0  # Reset PID error
     aruco_tracking = False
@@ -262,6 +285,10 @@ def search_for_aruco_bottom_camera():
             # If a marker is found, return its information
             if aruco_info[0] != 0:
                 print("Marker found!")
+                drone.send_rc_control(0, 0, 0, 0)  # Stop the drone
+                drone.land()  # Command the drone to land
+                cv2.destroyAllWindows()  # Close any OpenCV windows
+                
                 return aruco_info, area
 
             # If no marker is found, rotate and move in a search pattern
@@ -280,7 +307,6 @@ def search_for_aruco_bottom_camera():
             print("Moving forward...")
             drone.send_rc_control(0, search_distance, 50, 0)  # Move forward
             time.sleep(1)  # Wait for the movement to complete
-
         except Exception as e:
             print(f"Error during search: {e}")  # Handle any exceptions that occur during the search
         
@@ -322,41 +348,40 @@ def bottom_camera_and_land(frame):
             # Marker tracking logic
             if aruco_info[0] != 0:  # If the marker is found
                 print("Marker found, landing...")
-                cx, cy = aruco_info  # Get the coordinates of the marker
-                error_x = cx - frame.shape[1] // 2  # Calculate horizontal error
-                error_y = cy - frame.shape[0] // 2  # Calculate vertical error
+                drone.land()
+                # cx, cy = aruco_info  # Get the coordinates of the marker
+                # error_x = cx - frame.shape[1] // 2  # Calculate horizontal error
+                # error_y = cy - frame.shape[0] // 2  # Calculate vertical error
 
-                # PID calculations for yaw control
-                yaw_velocity, pError = track_aruco(aruco_info, frame.shape[1], PID, pError)
+                # # PID calculations for yaw control
+                # yaw_velocity, pError = track_aruco(aruco_info, frame.shape[1], PID, pError)
                 
-                # Forward control (approach marker)
-                forward_speed = max(30, int(SPEED * (1 - min(area / (LANDING_THRESHOLD * 1.5), 1))))  # Calculate forward speed based on area of the marker
+                # # Forward control (approach marker)
+                # forward_speed = max(30, int(SPEED * (1 - min(area / (LANDING_THRESHOLD * 1.5), 1))))  # Calculate forward speed based on area of the marker
                 
-                # Move towards the marker if the error is significant
-                if abs(error_x) > DISTANCE_THRESHOLD:
-                    drone.send_rc_control(0, forward_speed // 2, 0, yaw_velocity // 2)  # Control drone to move towards the marker
-                    time.sleep(1)  # Wait for the movement to take effect
+                # # Move towards the marker if the error is significant
+                # if abs(error_x) > DISTANCE_THRESHOLD:
+                #     drone.send_rc_control(0, forward_speed // 2, 0, yaw_velocity // 2)  # Control drone to move towards the marker
+                #     time.sleep(1)  # Wait for the movement to take effect
 
-                # If close enough to the marker, initiate landing
-                if area > LANDING_THRESHOLD:
-                    print("Marker detected and close enough. Landing!")
-                    drone.land()  # Command the drone to land
-                    landed = True  # Set landed flag to True
-                    break  # Exit the loop when landing is complete
-            else:
+                # # If close enough to the marker, initiate landing
+                # if area > LANDING_THRESHOLD:
+                #     print("Marker detected and close enough. Landing!")
+                #     drone.land()  # Command the drone to land
+                #     landed = True  # Set landed flag to True
+                #     break  # Exit the loop when landing is complete
+            elif aruco_info[0] == 0:
                 # If the marker is lost, start searching for it
                 print("Marker not found, starting search...")
                 aruco_info, area = search_for_aruco_bottom_camera()  # Call the search function to find the marker
 
-                # After finding the marker, proceed with landing
-                if aruco_info[0] != 0:  # If the marker is found after searching
-                    print("Found marker after search!")
-                    drone.send_rc_control(0, 0, 0, 0)  # Stop the drone
-                    time.sleep(1)  # Wait for a moment
-                    drone.land()  # Command the drone to land
-                    landed = True  # Set landed flag to True
-                    cv2.destroyAllWindows()  # Close any OpenCV windows
-                    break  # Exit the loop
+                # print("Found marker after search!")
+                # drone.send_rc_control(0, 0, 0, 0)  # Stop the drone
+                # time.sleep(1)  # Wait for a moment
+                # drone.land()  # Command the drone to land
+                # landed = True  # Set landed flag to True
+                # cv2.destroyAllWindows()  # Close any OpenCV windows
+                # break  # Exit the loop
 
             print("show vid")  # Placeholder for showing video feed
 
@@ -368,32 +393,87 @@ def bottom_camera_and_land(frame):
     pError = 0  # Reset PID error for future use
     aruco_tracking = False  # Disable ArUco tracking after landing
     
-# Tkinter GUI
+# tkinter GUI
 def create_gui():
     global battery_label, temperature_label
     root = tk.Tk()
     root.title("Tello Drone Controller")
     
-    tk.Button(root, text="Takeoff", command=safe_takeoff).pack()
-    tk.Button(root, text="Land", command=drone.land).pack()
-    tk.Button(root, text="Forward", command=lambda: drone.move_forward(30)).pack()
-    tk.Button(root, text="Backward", command=lambda: drone.move_back(30)).pack()
-    tk.Button(root, text="Left", command=lambda: drone.move_left(30)).pack()
-    tk.Button(root, text="Right", command=lambda: drone.move_right(30)).pack()
-    tk.Button(root, text="Up", command=lambda: drone.move_up(30)).pack()
-    tk.Button(root, text="Down", command=lambda: drone.move_down(30)).pack()
-    tk.Button(root, text="Rotate Left", command=lambda: drone.rotate_counter_clockwise(30)).pack()
-    tk.Button(root, text="Rotate Right", command=lambda: drone.rotate_clockwise(30)).pack()
-    tk.Button(root, text="Toggle Aruco Tracking", command=lambda: toggle_tracking('aruco')).pack()
-    tk.Button(root, text="Go to ArUco and Land", command=go_to_aruco_and_land).pack()
-    tk.Button(root, text="Switch Camera", highlightbackground="gold", command=lambda: set_camera_direction()).pack()
-    
-    # Labels to display battery status and temperature
-    battery_label = tk.Label(root, text="Battery: 100%")
-    battery_label.pack(pady=5)
-    
+    # Load background image
+    background_image = Image.open("Images/Gold-Brayer2.png")  # Replace with your image file
+    background_image = background_image.resize((800, 800), Image.ANTIALIAS)  # Resize to fit the window
+    background_photo = ImageTk.PhotoImage(background_image)
+
+    # Create a canvas to hold the background image
+    canvas = tk.Canvas(root, width=800, height=800, highlightcolor='gold')
+    canvas.pack(fill="both", expand=True)
+    canvas.create_image(0, 0, image=background_photo, anchor="nw")
+
+    # Create a frame for the controls
+    control_frame = tk.Frame(root, bd=1)
+    control_frame.place(relx=0.5, rely=0.85, anchor="center")
+
+    # Video stream placeholder
+    video_frame = tk.Frame(root, width=640, height=480, highlightbackground='yellow')
+    video_frame.place(relx=0.5, rely=0.45, anchor="center")
+    video_label = tk.Label(video_frame)
+    video_label.pack(expand=True, fill=tk.BOTH)
+
+    button_options = {'padx': 8, 'pady': 8, 'width': 10}
+
+    # Add buttons for vertical movement
+    up_button = tk.Button(control_frame, text="Up", command=move_up, **button_options)
+    up_button.grid(row=0, column=1)
+
+    down_button = tk.Button(control_frame, text="Down", command=move_down, **button_options)
+    down_button.grid(row=2, column=1)
+
+    # Add buttons for horizontal movement
+    left_button = tk.Button(control_frame, text="Left", command=move_left, **button_options)
+    left_button.grid(row=1, column=4)
+
+    right_button = tk.Button(control_frame, text="Right", command=move_right, **button_options)
+    right_button.grid(row=1, column=6)
+
+    # Add buttons for forward and backward movement
+    forward_button = tk.Button(control_frame, text="Forward", command=move_forward, **button_options)
+    forward_button.grid(row=0, column=5)
+
+    backward_button = tk.Button(control_frame, text="Backward", command=move_backward, **button_options)
+    backward_button.grid(row=2, column=5)
+
+    # Add new buttons for rotation
+    counter_clockwise_button = tk.Button(control_frame, text="Spin Left", command=rotate_counter_clockwise, **button_options)
+    counter_clockwise_button.grid(row=1, column=0)
+
+    clockwise_button = tk.Button(control_frame, text="Spin Right", command=rotate_clockwise, **button_options)
+    clockwise_button.grid(row=1, column=2)
+
+    # Add buttons for takeoff, landing, and "Go To" button controls
+    takeoff_button = tk.Button(control_frame, text="Take Off", highlightbackground='green3', command=safe_takeoff, **button_options)
+    takeoff_button.grid(row=0, column=3)
+
+    land_button = tk.Button(control_frame, text="Land", highlightbackground='yellow', command=land, **button_options)
+    land_button.grid(row=1, column=3)
+
+    emergency_stop_button = tk.Button(control_frame, text="Emergency Stop", highlightbackground='red3', command=emergency_stop, **button_options)
+    emergency_stop_button.grid(row=3, column=3)
+
+
+    go_to_button = tk.Button(control_frame, text="Go to ArUco and Land", highlightbackground='lightblue', command=go_to_aruco_and_land, **button_options)
+    go_to_button.grid(row=2, column=3)
+
+    # Battery status label
+    battery_label = tk.Label(root, text="Battery: 100%", bg="white")
+    battery_label.place(relx=0.5, rely=0.05, anchor="center")  # Center the battery label at the top
+
     temperature_label = tk.Label(root, text="Temperature: 25°C")
-    temperature_label.pack(pady=5)
+    temperature_label.place(relx=0.9, rely=0.05, anchor="center")
+
+    # Camera switch button
+    camera_button = tk.Button(root, text="Switch Camera", highlightbackground="gold", command=set_camera_direction, **button_options)
+    camera_button.place(relx=0.5, rely=0.1, anchor="center")  # Center the camera button below the battery label
+
 
     return root
 
@@ -432,12 +512,8 @@ def process_video():
             root.update_idletasks()
             root.update()
         else:
-            print("Tkinter GUI closed. Stopping GUI updates.")
+            print("tkinter GUI closed. Stopping GUI updates.")
             break  # Stop loop if the window is destroyed
-
-        # Exit on 'q' key press
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
     
     pError = 0  # Reset PID error before starting tracking loop
     cv2.destroyAllWindows()

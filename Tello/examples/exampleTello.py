@@ -395,7 +395,7 @@ def bottom_camera_and_land(frame):
     
 # tkinter GUI
 def create_gui():
-    global battery_label, temperature_label
+    global battery_label, temperature_label, video_label
     root = tk.Tk()
     root.title("Tello Drone Controller")
     
@@ -488,6 +488,31 @@ def update_drone_status():
     # Schedule the next update
     root.after(100, update_drone_status)  # Update every second
 
+# def process_video_gui():
+#     try:
+#         # Get the frame from the drone's camera
+#         frame = drone.get_frame_read().frame
+#         frame = cv2.resize(frame, (640, 480))
+
+#         #Process ArUco detection
+#         aruco_info, area, processed_frame = find_aruco(frame)
+
+#         # Convert to RGB and then ImageTk format
+#         processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+#         img = Image.fromarray(processed_frame)
+#         imgtk = ImageTk.PhotoImage(image=img)
+
+#         #Update the video_label with the new frame 
+#         video_label.imgtk = imgtk   #Prevent garbage collection
+#         video_label.config(image=imgtk)
+
+#         #Schedule the next frame update
+#         root.after(33, process_video_gui) #Roughly 30 fps
+
+#     except Exception as e:
+#         print(f"Video Processing Error: {e}")
+
+
 # Main loop for processing video stream
 def process_video():
     global pError
@@ -518,17 +543,53 @@ def process_video():
     pError = 0  # Reset PID error before starting tracking loop
     cv2.destroyAllWindows()
 
-# Initialize drone
-drone.connect()
-drone.streamon()
-drone.set_video_direction(drone.CAMERA_FORWARD)
+# === Only run the GUI when exampleTello.py is executed directly ===
+if __name__ == "__main__":
+    # Initialize drone
+    drone.connect()
+    drone.streamon()
+    drone.set_video_direction(drone.CAMERA_FORWARD)
 
-# Create GUI
-root = create_gui()
-update_drone_status()
+    # Create GUI
+    root = create_gui()
+    update_drone_status()
 
-# Start video processing
-process_video()
+    # Start GUI-integrated video stream
+    def process_video_gui():
+        try:
+            frame = drone.get_frame_read().frame
+            if frame is None or frame.size == 0:
+                print("Empty frame received.")
+                root.after(33, process_video_gui)
+                return
 
-# Close the GUI
-root.destroy()
+            frame = cv2.resize(frame, (640, 480))
+            aruco_info, area, processed_frame = find_aruco(frame)
+
+            # Rotate if bottom camera is active
+            if camera_down:
+                processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_90_CLOCKWISE)
+
+            # === FIX BLUE TINGE HERE ===
+            processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+            b, g, r = cv2.split(processed_frame)
+            r = cv2.addWeighted(r, 1.1, r, 0, 0)  # Boost red
+            g = cv2.addWeighted(g, 1.05, g, 0, 0)  # Slightly boost green
+            b = cv2.addWeighted(b, 0.9, b, 0, 0)   # Slightly reduce blue
+            processed_frame = cv2.merge((r, g, b))
+
+            # Convert to ImageTk format
+            img = Image.fromarray(processed_frame)
+            imgtk = ImageTk.PhotoImage(image=img)
+
+            video_label.imgtk = imgtk
+            video_label.config(image=imgtk)
+
+        except Exception as e:
+            print(f"Video Processing Error: {e}")
+
+        root.after(33, process_video_gui)
+
+    # Start the video loop and GUI
+    process_video_gui()
+    root.mainloop()

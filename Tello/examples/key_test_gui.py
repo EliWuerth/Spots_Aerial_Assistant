@@ -93,7 +93,7 @@ class TelloGUI(QMainWindow):
 
         control_layout = QVBoxLayout()
         control_layout.addWidget(self.battery_label)
-        control_layout.addWidget(self.switch_camera_button)
+        control_layout.addWidget(self.toggle_camera_button)
         control_layout.addWidget(self.takeoff_button)
         control_layout.addWidget(self.land_button)
         # control_layout.addWidget(self.up_button)

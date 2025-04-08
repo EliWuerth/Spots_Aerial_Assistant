@@ -241,12 +241,12 @@ def go_to_aruco_and_land():
 
             # Check for GUI events
             # Ensure root exists before updating
-            if root.winfo_exists():
-                root.update_idletasks()
-                root.update()
-            else:
-                print("tkinter GUI closed. Stopping GUI updates.")
-                break  # Stop loop if the window is destroyed
+            # if root.winfo_exists():
+            #     root.update_idletasks()
+            #     root.update()
+            # else:
+            #     print("tkinter GUI closed. Stopping GUI updates.")
+            #     break  # Stop loop if the window is destroyed
 
         except Exception as e:
             print(f"Error updating GUI line 202: {e}")
@@ -478,15 +478,15 @@ def create_gui():
     return root
 
 # Function to update battery status and temperature
-def update_drone_status():
-    try:
-        battery_label.config(text=f"Battery: {drone.get_battery()}%")  # Update battery label
-        temperature_label.config(text=f"Temperature: {drone.get_temperature()}°C")  # Update temperature label
-    except Exception as e:
-        print(f"Error retrieving drone status: {e}")
+# def update_drone_status():
+#     try:
+#         battery_label.config(text=f"Battery: {drone.get_battery()}%")  # Update battery label
+#         temperature_label.config(text=f"Temperature: {drone.get_temperature()}°C")  # Update temperature label
+#     except Exception as e:
+#         print(f"Error retrieving drone status: {e}")
     
-    # Schedule the next update
-    root.after(100, update_drone_status)  # Update every second
+#     # Schedule the next update
+#     root.after(100, update_drone_status)  # Update every second
 
 # Main loop for processing video stream
 def process_video():
@@ -508,27 +508,27 @@ def process_video():
             processed_frame = cv2.rotate(processed_frame, cv2.ROTATE_90_CLOCKWISE)
         cv2.imshow("Drone Feed", processed_frame)
 
-        if root.winfo_exists():
-            root.update_idletasks()
-            root.update()
-        else:
-            print("tkinter GUI closed. Stopping GUI updates.")
-            break  # Stop loop if the window is destroyed
+        # if root.winfo_exists():
+        #     root.update_idletasks()
+        #     root.update()
+        # else:
+        #     print("tkinter GUI closed. Stopping GUI updates.")
+        #     break  # Stop loop if the window is destroyed
     
     pError = 0  # Reset PID error before starting tracking loop
     cv2.destroyAllWindows()
 
 # Initialize drone
-drone.connect()
-drone.streamon()
-drone.set_video_direction(drone.CAMERA_FORWARD)
+# drone.connect()
+# drone.streamon()
+# drone.set_video_direction(drone.CAMERA_FORWARD)
 
-# Create GUI
-root = create_gui()
-update_drone_status()
+# # Create GUI
+# root = create_gui()
+# update_drone_status()
 
-# Start video processing
-process_video()
+# # Start video processing
+# process_video()
 
-# Close the GUI
-root.destroy()
+# # Close the GUI
+# root.destroy()

@@ -16,7 +16,7 @@ pError = 0
 camera_down = False
 face_tracking = False
 body_tracking = False
-aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_6X6_50)
+aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
 aruco_params = aruco.DetectorParameters()
 
 # Constants
@@ -87,14 +87,11 @@ def track_aruco(info, width, pid, p_error):
 
 # Function to approach and land on the ArUco marker
 def go_to_aruco_and_land():
-    global aruco_tracking, pError
+    global aruco_tracking, pError, camera_down
     aruco_tracking = True  # Enable ArUco tracking
     last_seen_time = time.time()
     landed = False
     marker_lost = False
-
-    drone.send_rc_control(0, 0, 0, 0)
-    time.sleep(0.5)
 
     while not landed:
         try:
@@ -108,7 +105,12 @@ def go_to_aruco_and_land():
             aruco_info, area, processed_frame = find_aruco(frame)
 
             # Marker tracking logic
+            if aruco_info[0] != 0 and (camera_down == True):
+                print("Aruco Found, Drone landing...")
+                drone.land()
+                landed = True
             if aruco_info[0] != 0:
+                print("Marker Found")
                 last_seen_time = time.time()
                 cx, cy = aruco_info
                 error_x = cx - frame.shape[1] // 2
@@ -137,126 +139,75 @@ def go_to_aruco_and_land():
                 if time.time() - last_seen_time > 2 and not marker_lost:  # 2 seconds without marker
                     marker_lost = True  # Prevent re-execution
                     print("Marker lost - hovering")
-                    drone.send_rc_control(0, 0, 0, 0)
-                    drone.send_rc_control(0, 40, 0, 0)
-                    drone.land()
-                    # Hover in place
+
                     drone.send_rc_control(0, 0, 0, 0)
                     time.sleep(1)
-
-                    # Hover in place and try a slight descent before switching
-                    drone.send_rc_control(0, 0, 30, 0)  # Gradually ascend
-                    time.sleep(2)
 
                     # Re-check with front camera before switching
                     img = drone.get_frame_read().frame
                     aruco_info, area, processed_frame = find_aruco(img)
-                    
-                    # Marker still not found? Switch cameras.
-                    if aruco_info[0] == 0:
-                        print("Switching to bottom camera...")
-                        # drone.set_video_direction(drone.CAMERA_DOWNWARD)
-                        processed_frame = bottom_camera_and_land(img)
 
+                    toggle_camera()
+                    
+                    drone.send_rc_control(0, 0, 0, 0)
+                    time.sleep(2)
+
+                    print("going to bottomcamland")
+                    bottom_camera_and_land()
+
+                    # camera_down = True
+                    # return camera_down
         except Exception as e:
             print(f"Error during ArUco tracking: {e}")
-            drone.land()
-            break  # Break out of the loop to prevent infinite errors
+            drone.end()
+            break
 
     pError = 0  # Reset PID error
     aruco_tracking = False
-    cv2.destroyAllWindows()
-
-def search_for_aruco_bottom_camera():
-    global aruco_tracking
-
-    search_step = 20  # Degrees to rotate at a time
-    search_distance = 20  # Distance to move forward
-    max_attempts = 2  # Limit retries to prevent infinite search loops
-    attempt = 0
-
-    # Loop to search for the ArUco marker with a limited number of attempts
-    while attempt < max_attempts:
-        try:
-            # Get the frame from the bottom camera
-            frame = drone.get_frame_read().frame
-            if frame is None or frame.size == 0:
-                print("Warning: Empty frame received from drone. Skipping...")
-                continue  # Skip to the next iteration if the frame is empty
-
-            # Resize the frame for processing
-            frame = cv2.resize(frame, (640, 480))
-            aruco_info, area, processed_frame = find_aruco(frame)  # Find ArUco markers in the frame
-
-            # If a marker is found, return its information
-            if aruco_info[0] != 0:
-                print("Marker found!")
-                drone.land()  # Command the drone to land
-                cv2.destroyAllWindows()  # Close any OpenCV windows
-                
-                return aruco_info, area
-
-            # If no marker is found, rotate and move in a search pattern
-            print("Marker not found, searching...")
-            print("Moving forward...")
-            drone.send_rc_control(0, 1, 0, 0)  # Move forward
-            time.sleep(1)  # Wait for the movement to complete
-        except Exception as e:
-            print(f"Error during search: {e}")  # Handle any exceptions that occur during the search
-        
-        attempt += 1  # Increment the attempt counter
-
-    print("Max search attempts reached. Returning to hover mode.")
-    return aruco_info, area  # Return the last known ArUco info and area
-
-def check_imu():
-    """Helper function to check if the IMU is valid before rotating."""
-    try:
-        altitude = drone.get_height()  # Get the drone's altitude
-        print(f"IMU check - Altitude: {altitude}")
-        return altitude is not None  # Ensure a valid response from the IMU
-    except Exception as e:
-        print(f"IMU check failed: {e}")  # Handle any exceptions during the IMU check
-    return False  # Return False if the check fails
+    drone.end()
 
 # Simplified function to approach and land on the ArUco marker using the bottom camera
-def bottom_camera_and_land(frame):
+def bottom_camera_and_land():
     global aruco_tracking, pError
     aruco_tracking = True  # Enable ArUco tracking
     last_seen_time = time.time()  # Record the last time the marker was seen
     landed = False  # Flag to indicate if the drone has landed
+    
+    # Get the frame from the drone's bottom camera
+    frame = drone.get_frame_read().frame
+    
+    # Resize the frame for processing
+    frame = cv2.resize(frame, (640, 480))
+    aruco_info, area, processed_frame = find_aruco(frame)  # Find ArUco markers in the frame
+
+    drone.send_rc_control(0,0,30,0)
+    
+    if aruco_info[0] == 0:
+        # If the marker is lost, start searching for it
+        print("Marker not found, starting search...")
+        drone.send_rc_control(0,0,0,0)
+        time.sleep(1)  # Wait for a second before searching again
+    else:
+        print("bottom cam mrker not found else statement tell drone land")
+        drone.land()
+
+    
+
+def toggle_camera():
+    global camera_down
     try:
-        # Get the frame from the drone's bottom camera
-        frame = drone.get_frame_read().frame
-        if frame is None or frame.size == 0:
-            print("Warning: Empty frame received from drone. Skipping...")
-            # Skip to the next iteration if the frame is empty
-
-        # Resize the frame for processing
-        frame = cv2.resize(frame, (640, 480))
-        aruco_info, area, processed_frame = find_aruco(frame)  # Find ArUco markers in the frame
-
-        # Marker tracking logic
-        if aruco_info[0] != 0:  # If the marker is found
-            print("Marker found, landing...")
-            drone.land()
-            landed = True  # Set the landed flag to True
-            drone.end()
+        if camera_down:
+            camera_down = False
+            drone.set_video_direction(drone.CAMERA_FORWARD)  # Front camera
+            print("Switched to front camera")
+        else:
+            camera_down = True
+            drone.set_video_direction(drone.CAMERA_DOWNWARD)  # Downward camera
+            print("Switched to downward camera")
         
-        elif aruco_info[0] == 0:
-            # If the marker is lost, start searching for it
-            print("Marker not found, starting search...")
-            aruco_info, area = search_for_aruco_bottom_camera()  # Call the search function to find the marker
-
-        print("show vid")  # Placeholder for showing video feed
-
     except Exception as e:
-        print(f"Error updating GUI line 369: {e}")  # Handle any exceptions that occur during the process
-        drone.land()  # Command the drone to land in case of an error
-        drone.end()# Break out of the loop to prevent infinite errors
-
-    pError = 0  # Reset PID error for future use
-    aruco_tracking = False  # Disable ArUco tracking after landing
+        print(f"Error toggling camera: {e}")
+    return camera_down
 
 # GUI Class
 class TelloGUI(QMainWindow):
@@ -270,6 +221,8 @@ class TelloGUI(QMainWindow):
 
         drone.connect()
         drone.streamon()
+
+        drone.set_video_direction(drone.CAMERA_FORWARD)
 
         self.track_marker = False
         self.find_marker = False
@@ -316,7 +269,7 @@ class TelloGUI(QMainWindow):
         self.switch_camera_button = QPushButton("Switch Camera")
         self.switch_camera_button.setStyleSheet("font-size: 16px; font-weight: bold; background-color: #9b59b6; color: white;")
         self.switch_camera_button.setFixedSize(160, 35)
-        self.switch_camera_button.clicked.connect(self.toggle_camera)
+        self.switch_camera_button.clicked.connect(toggle_camera)
 
         switch_button_layout = QHBoxLayout()
         switch_button_layout.setAlignment(Qt.AlignCenter)
@@ -375,7 +328,7 @@ class TelloGUI(QMainWindow):
         self.setPalette(palette)
 
     def update_frame(self):
-        try:
+        # try:
             # Get frame
             frame_read = drone.get_frame_read()
             if frame_read is None:
@@ -397,13 +350,13 @@ class TelloGUI(QMainWindow):
             rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
 
             # Convert to QImage and display
-            h, w, ch = rgb_frame.shape
+            h, w, ch = processed_frame.shape
             bytes_per_line = ch * w
-            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            qt_image = QImage(processed_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
             self.video_label.setPixmap(QPixmap.fromImage(qt_image))
 
-        except Exception as e:
-            print(f"in update_frame: {e}")
+        # except Exception as e:
+        #     print(f"in update_frame: {e}")
 
     def update_battery(self):
         try:
@@ -421,25 +374,10 @@ class TelloGUI(QMainWindow):
             print(f"Error getting temperature: {e}")
             drone.end()
 
-    def toggle_camera(self):
-        global camera_down
-        try:
-            if self.camera_down:
-                camera_down = False
-                drone.set_video_direction(drone.CAMERA_FORWARD)  # Front camera
-                print("Switched to front camera")
-            else:
-                camera_down = True
-                drone.set_video_direction(drone.CAMERA_DOWNWARD)  # Downward camera
-                print("Switched to downward camera")
-            self.camera_down = not self.camera_down
-        except Exception as e:
-            print(f"Error toggling camera: {e}")
-
     def takeoff(self):
         try:
             drone.takeoff()
-            drone.send_rc_control(0, 0, 0, 0)  # Stop all movement
+            time.sleep(5)  # Wait for takeoff to stabilize
         except Exception as e:
             print(f"Error during takeoff: {e}")
 
@@ -457,22 +395,20 @@ class TelloGUI(QMainWindow):
         try:
             print("Starting ArUco landing sequence...")
             go_to_aruco_and_land()
-            print("ArUco landing sequence complete.")
+            # print("ArUco landing sequence complete.")
         except Exception as e:
             print(f"Landing failed: {e}")
         finally:
             try:
-                drone.send_rc_control(0, 0, 0, 0)
+                # drone.send_rc_control(0, 0, 0, 0)
                 drone.end()
             except Exception as e:
                 print(f"[WARN] Cleanup error: {e}")
 
     def closeEvent(self, event):
-        try:
-            drone.land()
-            drone.end()
-        except Exception as e:
-            print(f"[WARN] on close: {e}")
+        drone.streamoff()  # Stop the video stream
+        drone.end()  # Disconnect from the drone
+        
         event.accept()
 
     def keyPressEvent(self, event):
@@ -480,22 +416,30 @@ class TelloGUI(QMainWindow):
 
         if key == Qt.Key_W:
             drone.send_rc_control(0, 30, 0, 0)  # Forward
+            time.sleep(0.5)
         elif key == Qt.Key_S:
             drone.send_rc_control(0, -30, 0, 0)  # Backward
+            time.sleep(0.5)
         elif key == Qt.Key_A:
             drone.send_rc_control(30, 0, 0, 0)  # Left
+            time.sleep(0.5)
         elif key == Qt.Key_D:
             drone.send_rc_control(-30, 0, 0, 0)  # Right
+            time.sleep(0.5)
         elif key == Qt.Key_Up:
             drone.send_rc_control(0, 0, 30, 0)  # Up
+            time.sleep(0.5)
         elif key == Qt.Key_Down:
             drone.send_rc_control(0, 0, -30, 0)  # Down
+            time.sleep(0.5)
         elif key == Qt.Key_E:
             drone.send_rc_control(0, 0, 0, 30) # Rotate clockwise
+            time.sleep(0.5)
         elif key == Qt.Key_Q:
             drone.send_rc_control(0, 0, 0, -30)  # Rotate counter-clockwise
+            time.sleep(0.5)
         elif key == Qt.Key_C:
-            self.toggle_camera()  # Camera toggle on 'C' key
+            toggle_camera()  # Camera toggle on 'C' key
 
     def keyReleaseEvent(self, event):
         drone.send_rc_control(0, 0, 0, 0)  # Stop all movement when key is released

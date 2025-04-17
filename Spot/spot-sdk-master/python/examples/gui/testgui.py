@@ -750,44 +750,25 @@ def move_robot(v_x, v_y, v_rot):
         return False
 
 def on_key_press(event):
-    key = event.char.lower()
+    global wasd_interface
+
     if not wasd_interface:
         return
+    
+    try:
+        #Convert key press to ASCII code to match dictionary keys
+        key_code =  ord(event.char.lower())
 
-    command_map = {
-        27: wasd_interface._stop,  # ESC key
-            ord('\t'): wasd_interface._quit_program,
-            ord('T'): wasd_interface._toggle_time_sync,
-            ord(' '): wasd_interface._toggle_estop,
-            ord('r'): wasd_interface._self_right,
-            ord('P'): wasd_interface._toggle_power,
-            ord('p'): wasd_interface._toggle_power,
-            ord('v'): wasd_interface._sit,
-            ord('b'): wasd_interface._battery_change_pose,
-            ord('f'): wasd_interface._stand,
-            ord('w'): wasd_interface._move_forward,
-            ord('s'): wasd_interface._move_backward,
-            ord('a'): wasd_interface._strafe_left,
-            ord('d'): wasd_interface._strafe_right,
-            ord('q'): wasd_interface._turn_left,
-            ord('e'): wasd_interface._turn_right,
-            ord('I'): wasd_interface._image_task.take_image,
-            ord('O'): wasd_interface._image_task.toggle_video_mode,
-            ord('u'): wasd_interface._unstow,
-            ord('j'): wasd_interface._stow,
-            ord('l'): wasd_interface._toggle_lease
-    }
+        command_map = wasd_interface._command_dictionary
 
-    if key in command_map:
-        try:
-            command_map[key]()
-            status_label.config(text=f"Command: {key}")
-        except Exception as e:
-            status_label.config(text=f"Error on '{key}': {e}")
-            print({e})
-    else:
-        status_label.config(text=f"Unrecognized key: {key}")
-
+        if key_code in command_map:
+            command_map[key_code]() #Trigger the associated method
+            status_label.config(text=f"Command: {event.char.upper()}")
+        else:
+            status_label.config(text=f"Unrecognized key: {event.char}")
+    except Exception as e: 
+        status_label.config(text=f"Key error: {str(e)}")
+        print(f"Key press error: {e}")
 
 def update_camera_feed():
     global image_client, camera_label, root, camera_selector

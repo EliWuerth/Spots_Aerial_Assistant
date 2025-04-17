@@ -1,25 +1,10 @@
 import tkinter as tk
 from tkinter import messagebox
-import bosdyn.client
-from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
-import bosdyn.client.util
-import time
-from bosdyn.client.lease import *
-from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder, blocking_stand
-from bosdyn.client.robot_state import RobotStateClient
-from bosdyn.client.image import ImageClient
-import examples.wasd
-from bosdyn.client import create_standard_sdk
-from bosdyn.client.robot import Robot
-from bosdyn.api import geometry_pb2
-from bosdyn.util import seconds_to_duration
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget)
 from PyQt5.QtGui import QPalette, QPixmap, QBrush
 from PyQt5.QtCore import Qt
 import os
-from PIL import Image, ImageTk
-
-
+from PIL import Image, ImageTk, ImageEnhance
 import curses
 import io
 import logging
@@ -29,35 +14,32 @@ import signal
 import sys
 import threading
 import time
+
+
+import bosdyn.client
+from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
+import bosdyn.client.util
+from bosdyn.client.lease import *
+from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder, blocking_stand
+from bosdyn.client.robot_state import RobotStateClient
+from bosdyn.client.image import ImageClient
+
+from bosdyn.client.robot import Robot
+from bosdyn.api import geometry_pb2,robot_state_pb2, basic_command_pb2
+from bosdyn.util import seconds_to_duration
 from collections import OrderedDict
 from bosdyn.client import Robot
 from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
 from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-from bosdyn.client.power import PowerClient, PowerServiceProto
-from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder
-from bosdyn.client.robot_state import RobotStateClient
-from bosdyn.client.image import ImageClient
-from bosdyn.client.async_tasks import AsyncTasks, AsyncRobotState, AsyncImageCapture
-from bosdyn.api import robot_state_pb2, basic_command_pb2, spot_command_pb2
-import io
-
+from bosdyn.client.power import PowerClient
+from bosdyn.client.async_tasks import AsyncTasks, AsyncGRPCTask, AsyncPeriodicQuery
 import bosdyn.api.basic_command_pb2 as basic_command_pb2
 import bosdyn.api.power_pb2 as PowerServiceProto
 # import bosdyn.api.robot_command_pb2 as robot_command_pb2
 import bosdyn.api.robot_state_pb2 as robot_state_proto
 import bosdyn.api.spot.robot_command_pb2 as spot_command_pb2
-import bosdyn.client.util
-from bosdyn.api import geometry_pb2
 from bosdyn.client import ResponseError, RpcError, create_standard_sdk
-from bosdyn.client.async_tasks import AsyncGRPCTask, AsyncPeriodicQuery, AsyncTasks
-from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
-from bosdyn.client.image import ImageClient
 from bosdyn.client.lease import Error as LeaseBaseError
-from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
-from bosdyn.client.power import PowerClient
-from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
-from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.time_sync import TimeSyncError
 from bosdyn.util import duration_str, format_metric, secs_to_hms
 
@@ -67,6 +49,7 @@ lease_keep_alive = None
 robot = None
 command_client = None
 image_client = None
+wasd_interface = None
 IP = ""
 VELOCITY_CMD_DURATION = 0.6  # seconds
 MAX_LINEAR_VELOCITY = 0.5  # m/s
@@ -84,6 +67,40 @@ status_label = None
 battery_label = None
 canvas = None
 root = None
+
+# from the wasd.py file
+def _image_to_ascii(image, new_width):
+    """Convert an rgb image to an ASCII 'image' that can be displayed in a terminal."""
+
+    ASCII_CHARS = '@#S%?*+;:,.'
+
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(0.8)
+
+    # Scaling image before rotation by 90 deg.
+    scaled_rot_height = new_width
+    original_rot_width, original_rot_height = image.size
+    scaled_rot_width = (original_rot_width * scaled_rot_height) // original_rot_height
+    # Scaling rotated width (height, after rotation) by half because ASCII chars
+    #  in terminal seem about 2x as tall as wide.
+    image = image.resize((scaled_rot_width // 2, scaled_rot_height))
+
+    # Rotate image 90 degrees, then convert to grayscale.
+    image = image.transpose(Image.ROTATE_270)
+    image = image.convert('L')
+
+    def _pixel_char(pixel_val):
+        return ASCII_CHARS[pixel_val * len(ASCII_CHARS) // 256]
+
+    img = []
+    row = [' '] * new_width
+    last_col = new_width - 1
+    for idx, pixel_char in enumerate(_pixel_char(val) for val in image.getdata()):
+        idx_row = idx % new_width
+        row[idx_row] = pixel_char
+        if idx_row == last_col:
+            img.append(''.join(row))
+    return img
 
 class ExitCheck(object):
     """A class to help exiting a loop, also capturing SIGTERM to exit the loop."""
@@ -181,6 +198,7 @@ class WasdInterface(object):
 
     def __init__(self, robot):
         self._robot = robot
+        print("WasdInterface: __init__ called")  # Added debug log
         # Create clients -- do not use the for communication yet.
         self._lease_client = robot.ensure_client(LeaseClient.default_service_name)
         try:
@@ -231,13 +249,11 @@ class WasdInterface(object):
     def start(self):
         """Begin communication with the robot."""
         # Construct our lease keep-alive object, which begins RetainLease calls in a thread.
-        self._lease_keepalive = LeaseKeepAlive(self._lease_client, must_acquire=True,
-                                               return_at_exit=True)
+        self._lease_keepalive = LeaseKeepAlive(self._lease_client, must_acquire=True, return_at_exit=True)
 
         self._robot_id = self._robot.get_id()
-        if self._estop_endpoint is not None:
-            self._estop_endpoint.force_simple_setup(
-            )  # Set this endpoint as the robot's sole estop.
+        # if self._estop_endpoint is not None:
+        #     self._estop_endpoint.force_simple_setup()  # Set this endpoint as the robot's sole estop.
 
     def shutdown(self):
         """Release control of robot as gracefully as possible."""
@@ -392,8 +408,7 @@ class WasdInterface(object):
         """toggle lease acquisition. Initial state is acquired"""
         if self._lease_client is not None:
             if self._lease_keepalive is None:
-                self._lease_keepalive = LeaseKeepAlive(self._lease_client, must_acquire=True,
-                                                       return_at_exit=True)
+                self._lease_keepalive = LeaseKeepAlive(self._lease_client, must_acquire=True, return_at_exit=True)
             else:
                 self._lease_keepalive.shutdown()
                 self._lease_keepalive = None
@@ -401,8 +416,7 @@ class WasdInterface(object):
     def _start_robot_command(self, desc, command_proto, end_time_secs=None):
 
         def _start_command():
-            self._robot_command_client.robot_command(command=command_proto,
-                                                     end_time_secs=end_time_secs)
+            self._robot_command_client.robot_command(command=command_proto, end_time_secs=end_time_secs)
 
         self._try_grpc(desc, _start_command)
 
@@ -444,9 +458,7 @@ class WasdInterface(object):
         self._start_robot_command('stop', RobotCommandBuilder.stop_command())
 
     def _velocity_cmd_helper(self, desc='', v_x=0.0, v_y=0.0, v_rot=0.0):
-        self._start_robot_command(
-            desc, RobotCommandBuilder.synchro_velocity_command(v_x=v_x, v_y=v_y, v_rot=v_rot),
-            end_time_secs=time.time() + VELOCITY_CMD_DURATION)
+        self._start_robot_command(desc, RobotCommandBuilder.synchro_velocity_command(v_x=v_x, v_y=v_y, v_rot=v_rot), end_time_secs=time.time() + VELOCITY_CMD_DURATION)
 
     def _stow(self):
         self._start_robot_command('stow', RobotCommandBuilder.arm_stow_command())
@@ -457,10 +469,7 @@ class WasdInterface(object):
     def _return_to_origin(self):
         self._start_robot_command(
             'fwd_and_rotate',
-            RobotCommandBuilder.synchro_se2_trajectory_point_command(
-                goal_x=0.0, goal_y=0.0, goal_heading=0.0, frame_name=ODOM_FRAME_NAME, params=None,
-                body_height=0.0, locomotion_hint=spot_command_pb2.HINT_SPEED_SELECT_TROT),
-            end_time_secs=time.time() + 20)
+            RobotCommandBuilder.synchro_se2_trajectory_point_command(goal_x=0.0, goal_y=0.0, goal_heading=0.0, frame_name=ODOM_FRAME_NAME, params=None, body_height=0.0, locomotion_hint=spot_command_pb2.HINT_SPEED_SELECT_TROT), end_time_secs=time.time() + 20)
 
     def _take_ascii_image(self):
         source_name = 'frontright_fisheye_image'
@@ -572,7 +581,7 @@ class WasdInterface(object):
         if battery_state.estimated_runtime:
             time_left = f'({secs_to_hms(battery_state.estimated_runtime.seconds)})'
         return f'Battery: {status}{bat_bar} {time_left}'
-
+# end of code from wasd.py
 
 def _setup_logging(verbose):
     """Log to file at debug level, and log to console at INFO or DEBUG (if verbose).
@@ -633,19 +642,65 @@ def check_battery_status(root):
 
     root.after(60000, check_battery_status, root)
 
+import time
+from bosdyn.api.robot_state_pb2 import PowerState 
+from bosdyn.client.robot_state import RobotStateClient
+
+def wait_for_power_on(robot, timeout_sec=20):
+    #Polls the robot's state until it is powered on or times out
+    state_client = robot.ensure_client(RobotStateClient.default_service_name)
+
+    for _ in range(timeout_sec):
+        state = state_client.get_robot_state()
+        if state.power_state.motor_power_state == PowerState.STATE_ON:
+            return True
+        time.sleep(1)
+
+    raise TimeoutError("Timed out waiting for robot to power.")
+
 def take_lease():
-    global lease_client, lease_keep_alive, robot, command_client, image_client
+    global lease_client, lease_keep_alive, robot, command_client, image_client, wasd_interface
     try:
         sdk = create_standard_sdk("SpotController")
         robot = sdk.create_robot(IP)
         robot.authenticate(os.environ['BOSDYN_CLIENT_USERNAME'], os.environ['BOSDYN_CLIENT_PASSWORD'])
 
+        # Start time synchronization before taking lease
+        robot.start_time_sync()
+        robot.time_sync.wait_for_sync()
+
         lease_client = robot.ensure_client(LeaseClient.default_service_name)
-        lease = lease_client.take()
-        lease_keep_alive = LeaseKeepAlive(lease_client)
+        lease = lease_client.take() #Take the lease explicitly 
+        lease_keep_alive = LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True)
 
         command_client = robot.ensure_client(RobotCommandClient.default_service_name)
         image_client = robot.ensure_client(ImageClient.default_service_name)
+
+        # Remove explicit lease take and LeaseKeepAlive to avoid conflicts
+        # lease = lease_client.take()
+        # lease_keep_alive = LeaseKeepAlive(lease_client)
+
+        #Power on the robot
+        power_client = robot.ensure_client(PowerClient.default_service_name)
+        import bosdyn.api.power_pb2 as power_pb2
+        from bosdyn.client import power
+
+        #Estop Setup
+        estop_client = robot.ensure_client(EstopClient.default_service_name)
+        estop_endpoint = EstopEndpoint(estop_client, 'GUI_Estop', 9.0)
+        estop_endpoint.force_simple_setup()  # become the sole E-Stop source
+        estop_keep_alive = EstopKeepAlive(estop_endpoint)  # start sending heartbeats
+        
+        power_client.power_command(power_pb2.PowerCommandRequest.REQUEST_ON)
+        wait_for_power_on(robot)
+
+        global wasd_interface
+        wasd_interface = WasdInterface(robot)
+        wasd_interface.start()
+
+        # Update global lease_keep_alive to wasd_interface's lease keepalive
+        # global lease_keep_alive
+        lease_keep_alive = wasd_interface._lease_keepalive
 
         blocking_stand(command_client)
 
@@ -696,35 +751,43 @@ def move_robot(v_x, v_y, v_rot):
 
 def on_key_press(event):
     key = event.char.lower()
-    if key == 'w':
-        move_robot(MAX_LINEAR_VELOCITY, 0, 0)
-    elif key == 's':
-        move_robot(-MAX_LINEAR_VELOCITY, 0, 0)
-    elif key == 'a':
-        move_robot(0, MAX_LINEAR_VELOCITY, 0)
-    elif key == 'd':
-        move_robot(0, -MAX_LINEAR_VELOCITY, 0)
-    elif key == 'q':
-        move_robot(0, 0, MAX_ANGULAR_VELOCITY)
-    elif key == 'e':
-        move_robot(0, 0, -MAX_ANGULAR_VELOCITY)
-    elif key == ' ':
-        try:
-            blocking_stand(command_client)
-            status_label.config(text="Standing")
-        except Exception as e:
-            status_label.config(text=f"Stand error: {str(e)}")
-            print({e})
+    if not wasd_interface:
+        return
 
-    elif key == 'x':
+    command_map = {
+        27: wasd_interface._stop,  # ESC key
+            ord('\t'): wasd_interface._quit_program,
+            ord('T'): wasd_interface._toggle_time_sync,
+            ord(' '): wasd_interface._toggle_estop,
+            ord('r'): wasd_interface._self_right,
+            ord('P'): wasd_interface._toggle_power,
+            ord('p'): wasd_interface._toggle_power,
+            ord('v'): wasd_interface._sit,
+            ord('b'): wasd_interface._battery_change_pose,
+            ord('f'): wasd_interface._stand,
+            ord('w'): wasd_interface._move_forward,
+            ord('s'): wasd_interface._move_backward,
+            ord('a'): wasd_interface._strafe_left,
+            ord('d'): wasd_interface._strafe_right,
+            ord('q'): wasd_interface._turn_left,
+            ord('e'): wasd_interface._turn_right,
+            ord('I'): wasd_interface._image_task.take_image,
+            ord('O'): wasd_interface._image_task.toggle_video_mode,
+            ord('u'): wasd_interface._unstow,
+            ord('j'): wasd_interface._stow,
+            ord('l'): wasd_interface._toggle_lease
+    }
+
+    if key in command_map:
         try:
-            # Fixing sit command usage
-            cmd = RobotCommandBuilder.synchro_stand_command()  # Command to sit or transition to sit
-            command_client.robot_command(cmd)
-            status_label.config(text="Sitting")
+            command_map[key]()
+            status_label.config(text=f"Command: {key}")
         except Exception as e:
-            status_label.config(text=f"Sitting error: {str(e)}")
+            status_label.config(text=f"Error on '{key}': {e}")
             print({e})
+    else:
+        status_label.config(text=f"Unrecognized key: {key}")
+
 
 def update_camera_feed():
     global image_client, camera_label, root, camera_selector
@@ -803,9 +866,29 @@ def mainInterface():
     camera_dropdown = tk.OptionMenu(root, camera_selector, "frontleft", "frontright", "rear", "depth", "hand", "spot-cam")
     camera_dropdown.place(x=150, y=100)
 
+    # Bind keypress events to on_key_press
+    root.bind_all("<Key>", on_key_press)
+
     # Buttons for controlling the robot, etc.
-    tk.Button(root, text="Stand", font=('arial', 12), command=lambda: on_key_press(type('Event', (object,), {'char': ' '})())).place(x=50, y=150)
-    tk.Button(root, text="Sit", font=('arial', 12), command=lambda: on_key_press(type('Event', (object,), {'char': 'x'})())).place(x=50, y=200)
+    def safe_stand():
+        if wasd_interface:
+            wasd_interface._stand()
+            status_label.config(text="Command: Stand")
+        else:
+            status_label.config(text="Cannot Stand: Lease not acquired")
+
+    def safe_sit():
+        if wasd_interface:
+            wasd_interface._sit()
+            status_label.config(text="Command: Sit")
+        else:
+            status_label.config(text="Cannot Sit: Lease not acquired")
+
+    tk.Button(root, text="Stand", font=('arial', 12), command=safe_stand).place(x=50, y=150)
+    tk.Button(root, text="Sit", font=('arial', 12), command=safe_sit).place(x=50, y=200)
+
+    # Add Take Lease button
+    tk.Button(root, text="Take Lease", font=('arial', 12), command=take_lease).place(x=50, y=250)
 
     # Setup the camera feed label
     camera_label = tk.Label(root, text="Connecting to camera...", bg='black', fg='white')
@@ -844,3 +927,8 @@ def createLoginWindow():
 
 if __name__ == "__main__":
     createLoginWindow()
+
+# Add key binding to capture keypresses and call on_key_press
+# The root window is created inside mainInterface(), so bind the key event there
+
+

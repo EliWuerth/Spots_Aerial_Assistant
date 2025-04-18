@@ -1,8 +1,10 @@
 import tkinter as tk
 from tkinter import messagebox
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget)
-from PyQt5.QtGui import QPalette, QPixmap, QBrush
-from PyQt5.QtCore import Qt
+from PyQt5 import QtWidgets, QtGui, QtCore
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QComboBox, QMessageBox, QStackedLayout,QSizePolicy)
+from PyQt5.QtGui import QPalette, QPixmap, QBrush, QImage, QIcon
+from PyQt5.QtCore import Qt, QTimer
+import sys
 import os
 from PIL import Image, ImageTk, ImageEnhance
 import curses
@@ -14,8 +16,6 @@ import signal
 import sys
 import threading
 import time
-
-
 import bosdyn.client
 from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
 import bosdyn.client.util
@@ -23,7 +23,6 @@ from bosdyn.client.lease import *
 from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder, blocking_stand
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.image import ImageClient
-
 from bosdyn.client.robot import Robot
 from bosdyn.api import geometry_pb2,robot_state_pb2, basic_command_pb2
 from bosdyn.util import seconds_to_duration
@@ -35,13 +34,15 @@ from bosdyn.client.power import PowerClient
 from bosdyn.client.async_tasks import AsyncTasks, AsyncGRPCTask, AsyncPeriodicQuery
 import bosdyn.api.basic_command_pb2 as basic_command_pb2
 import bosdyn.api.power_pb2 as PowerServiceProto
-# import bosdyn.api.robot_command_pb2 as robot_command_pb2
 import bosdyn.api.robot_state_pb2 as robot_state_proto
 import bosdyn.api.spot.robot_command_pb2 as spot_command_pb2
 from bosdyn.client import ResponseError, RpcError, create_standard_sdk
 from bosdyn.client.lease import Error as LeaseBaseError
 from bosdyn.client.time_sync import TimeSyncError
 from bosdyn.util import duration_str, format_metric, secs_to_hms
+import bosdyn.api.power_pb2 as power_pb2
+from bosdyn.client import power
+from bosdyn.api.robot_state_pb2 import PowerState
 
 current_process = None
 lease_client = None
@@ -71,7 +72,6 @@ root = None
 # from the wasd.py file
 def _image_to_ascii(image, new_width):
     """Convert an rgb image to an ASCII 'image' that can be displayed in a terminal."""
-
     ASCII_CHARS = '@#S%?*+;:,.'
 
     enhancer = ImageEnhance.Contrast(image)
@@ -104,7 +104,6 @@ def _image_to_ascii(image, new_width):
 
 class ExitCheck(object):
     """A class to help exiting a loop, also capturing SIGTERM to exit the loop."""
-
     def __init__(self):
         self._kill_now = False
         signal.signal(signal.SIGTERM, self._sigterm_handler)
@@ -128,10 +127,8 @@ class ExitCheck(object):
         """Return the status of the exit checker indicating if it should exit."""
         return self._kill_now
 
-
 class CursesHandler(logging.Handler):
     """logging handler which puts messages into the curses interface"""
-
     def __init__(self, wasd_interface):
         super(CursesHandler, self).__init__()
         self._wasd_interface = wasd_interface
@@ -141,21 +138,16 @@ class CursesHandler(logging.Handler):
         msg = msg.replace('\n', ' ').replace('\r', '')
         self._wasd_interface.add_message(f'{record.levelname:s} {msg:s}')
 
-
 class AsyncRobotState(AsyncPeriodicQuery):
     """Grab robot state."""
-
     def __init__(self, robot_state_client):
-        super(AsyncRobotState, self).__init__('robot_state', robot_state_client, LOGGER,
-                                              period_sec=0.2)
+        super(AsyncRobotState, self).__init__('robot_state', robot_state_client, LOGGER, period_sec=0.2)
 
     def _start_query(self):
         return self._client.get_robot_state_async()
 
-
 class AsyncImageCapture(AsyncGRPCTask):
     """Grab camera images from the robot."""
-
     def __init__(self, robot):
         super(AsyncImageCapture, self).__init__()
         self._image_client = robot.ensure_client(ImageClient.default_service_name)
@@ -192,10 +184,8 @@ class AsyncImageCapture(AsyncGRPCTask):
     def _handle_error(self, exception):
         LOGGER.exception('Failure getting image: %s', exception)
 
-
 class WasdInterface(object):
     """A curses interface for driving the robot."""
-
     def __init__(self, robot):
         self._robot = robot
         print("WasdInterface: __init__ called")  # Added debug log
@@ -217,26 +207,26 @@ class WasdInterface(object):
         self._lock = threading.Lock()
         self._command_dictionary = {
             27: self._stop,  # ESC key
-            ord('\t'): self._quit_program,
-            ord('T'): self._toggle_time_sync,
-            ord(' '): self._toggle_estop,
-            ord('r'): self._self_right,
-            ord('P'): self._toggle_power,
-            ord('p'): self._toggle_power,
-            ord('v'): self._sit,
-            ord('b'): self._battery_change_pose,
-            ord('f'): self._stand,
-            ord('w'): self._move_forward,
-            ord('s'): self._move_backward,
-            ord('a'): self._strafe_left,
-            ord('d'): self._strafe_right,
-            ord('q'): self._turn_left,
-            ord('e'): self._turn_right,
-            ord('I'): self._image_task.take_image,
-            ord('O'): self._image_task.toggle_video_mode,
-            ord('u'): self._unstow,
-            ord('j'): self._stow,
-            ord('l'): self._toggle_lease
+            '\t': self._quit_program,
+            't': self._toggle_time_sync,
+            ' ': self._toggle_estop,
+            'r': self._self_right,
+            'P': self._toggle_power,
+            'p': self._toggle_power,
+            'v': self._sit,
+            'b': self._battery_change_pose,
+            'f': self._stand,
+            'w': self._move_forward,
+            's': self._move_backward,
+            'a': self._strafe_left,
+            'd': self._strafe_right,
+            'q': self._turn_left,
+            'e': self._turn_right,
+            'i': self._image_task.take_image,
+            'O': self._image_task.toggle_video_mode,
+            'u': self._unstow,
+            'j': self._stow,
+            'l': self._toggle_lease
         }
         self._locked_messages = ['', '', '']  # string: displayed message for user
         self._estop_keepalive = None
@@ -269,7 +259,7 @@ class WasdInterface(object):
         key = ''
         while key != -1:
             key = stdscr.getch()
-            if key == ord(' '):
+            if key == (' '):
                 self._toggle_estop()
 
     def add_message(self, msg_text):
@@ -484,7 +474,6 @@ class WasdInterface(object):
         else:
             self._video_mode = True
 
-
     def _toggle_power(self):
         power_state = self._power_state()
         if power_state is None:
@@ -581,7 +570,6 @@ class WasdInterface(object):
         if battery_state.estimated_runtime:
             time_left = f'({secs_to_hms(battery_state.estimated_runtime.seconds)})'
         return f'Battery: {status}{bat_bar} {time_left}'
-# end of code from wasd.py
 
 def _setup_logging(verbose):
     """Log to file at debug level, and log to console at INFO or DEBUG (if verbose).
@@ -609,15 +597,18 @@ def _setup_logging(verbose):
     LOGGER.addHandler(stream_handler)
     return stream_handler
 
-def check_battery_status(root):
+def check_battery_status(widget):
     global battery_label, IP, robot
 
     username = os.environ.get('BOSDYN_CLIENT_USERNAME')
     password = os.environ.get('BOSDYN_CLIENT_PASSWORD')
 
+    def retry_later():
+        QTimer.singleShot(60000, lambda: check_battery_status(widget))  # retry in 60 sec
+
     if not username or not password or not IP:
-        battery_label.config(text="Invalid Log-In")
-        root.after(60000, check_battery_status, root)  
+        battery_label.setText("Invalid Log-In")
+        retry_later()
         return
 
     try:
@@ -633,18 +624,14 @@ def check_battery_status(root):
 
         if battery_states:
             battery_percentage = battery_states[0].charge_percentage.value
-            battery_label.config(text=f"Battery: {battery_percentage}%")
+            battery_label.setText(f"Battery: {battery_percentage:.1f}%")
         else:
-            battery_label.config(text="Battery info unavailable")
+            battery_label.setText("Battery info unavailable")
 
     except Exception as e:
-        battery_label.config(text=f"Error: {str(e)}")
+        battery_label.setText(f"Error: {str(e)}")
 
-    root.after(60000, check_battery_status, root)
-
-import time
-from bosdyn.api.robot_state_pb2 import PowerState 
-from bosdyn.client.robot_state import RobotStateClient
+    retry_later()
 
 def wait_for_power_on(robot, timeout_sec=20):
     #Polls the robot's state until it is powered on or times out
@@ -676,14 +663,8 @@ def take_lease():
         command_client = robot.ensure_client(RobotCommandClient.default_service_name)
         image_client = robot.ensure_client(ImageClient.default_service_name)
 
-        # Remove explicit lease take and LeaseKeepAlive to avoid conflicts
-        # lease = lease_client.take()
-        # lease_keep_alive = LeaseKeepAlive(lease_client)
-
         #Power on the robot
         power_client = robot.ensure_client(PowerClient.default_service_name)
-        import bosdyn.api.power_pb2 as power_pb2
-        from bosdyn.client import power
 
         #Estop Setup
         estop_client = robot.ensure_client(EstopClient.default_service_name)
@@ -702,12 +683,10 @@ def take_lease():
         # global lease_keep_alive
         lease_keep_alive = wasd_interface._lease_keepalive
 
-        blocking_stand(command_client)
-
-        status_label.config(text="Lease acquired - Ready for commands")
+        status_label.setText("Lease acquired - Ready for commands")
         return True
     except Exception as e:
-        status_label.config(text=f"Lease error: {str(e)}")
+        status_label.setText(f"Lease error: {str(e)}")
         return False
 
 def release_lease():
@@ -729,79 +708,72 @@ def startEStop():
         status_label.config(text=f"E-Stop error: {str(e)}")
 
 def move_robot(v_x, v_y, v_rot):
-    global robot, command_client
-
-    if not robot.is_powered_on():
-        robot.power_on(timeout_sec=20)
-
-    if not robot or not command_client:
-        if not take_lease():
-            return False
+    global robot, command_client, status_label
 
     try:
-        cmd = RobotCommandBuilder.synchro_velocity_command(v_x=v_x, v_y=v_y, v_rot=v_rot, duration=VELOCITY_CMD_DURATION)
+        if not robot or not command_client:
+            if not take_lease():
+                return False
+
+        if not robot.is_powered_on():
+            robot.power_on(timeout_sec=20)
+
+        cmd = RobotCommandBuilder.synchro_velocity_command(
+            v_x=v_x, v_y=v_y, v_rot=v_rot, duration=VELOCITY_CMD_DURATION)
         command_client.robot_command(cmd)
 
+        status_label.setText("Move command sent")
         return True
-    except Exception as e:
-        status_label.config(text=f"Move error: {str(e)}")
-        print({e})
 
+    except Exception as e:
+        status_label.setText(f"Move error: {str(e)}")
+        print(f"Move error: {e}")
         return False
 
 def on_key_press(event):
-    global wasd_interface
+    global wasd_interface, status_label
 
     if not wasd_interface:
         return
-    
-    try:
-        #Convert key press to ASCII code to match dictionary keys
-        key_code =  ord(event.char.lower())
 
+    try:
+        char = event.text().lower()
         command_map = wasd_interface._command_dictionary
 
-        if key_code in command_map:
-            command_map[key_code]() #Trigger the associated method
-            status_label.config(text=f"Command: {event.char.upper()}")
+        if char in command_map:
+            command_map[char]()  # Trigger the associated method
+            status_label.setText(f"Command: {char.upper()}")
         else:
-            status_label.config(text=f"Unrecognized key: {event.char}")
-    except Exception as e: 
-        status_label.config(text=f"Key error: {str(e)}")
+            status_label.setText(f"Unrecognized key: {char}")
+    except Exception as e:
+        status_label.setText(f"Key error: {str(e)}")
         print(f"Key press error: {e}")
 
 def update_camera_feed():
-    global image_client, camera_label, root, camera_selector
+    global image_client
     try:
-        # Get the selected camera name from the dropdown
-        selected_camera = camera_selector.get()
-
-        # Attempt to get a valid image response from the selected camera
+        selected_camera = camera_selector.currentText()
         image_response = image_client.get_image_from_sources([selected_camera])[0]
         img_data = image_response.shot.image.data
+        cols = image_response.shot.image.cols
+        rows = image_response.shot.image.rows
 
-        if not img_data:  # Check if image data is available
-            camera_label.config(text="No image data")
+        if not img_data:
+            camera_label.setText("No image data")
             return
 
-        # Convert image data to displayable format
-        img = Image.frombytes('L', (image_response.shot.image.cols, image_response.shot.image.rows), img_data)
-        img = img.resize((300, 200))
-        img = ImageTk.PhotoImage(img)
-
-        # Update the camera label with the new image
-        camera_label.configure(image=img)
-        camera_label.image = img
+        q_image = QImage(img_data, cols, rows, QImage.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(q_image).scaled(300, 200)
+        camera_label.setPixmap(pixmap)
     except Exception as e:
-        camera_label.configure(text=f"Camera Error:\n{str(e)}", image='')
-        print({e})
-    
-    # Continue updating the feed every 100ms
-    root.after(100, update_camera_feed)
+        camera_label.setText(f"Camera Error:\n{str(e)}")
+        camera_label.setPixmap(QPixmap())
+
+    QTimer.singleShot(100, update_camera_feed)
 
 def run_with_inputs(username, password, ip):
     if not username or not password or not ip:
-        messagebox.showerror("Error", "All fields required!")
+        QMessageBox.critical(None, "Error", "All fields are required!")
         return
 
     os.environ['BOSDYN_CLIENT_USERNAME'] = username
@@ -810,106 +782,198 @@ def run_with_inputs(username, password, ip):
     global IP
     IP = ip
 
-    login_window.destroy()
+    login_window.close()
     mainInterface()
-    
+
 def mainInterface():
-    global status_label, battery_label, camera_label, root, camera_selector
+    global status_label, battery_label, camera_label, main_window, camera_selector
 
-    root = tk.Tk()
-    root.geometry("600x600")
-    root.title("Spot Control Panel")
+    class SpotMainWindow(QMainWindow):
+        def keyPressEvent(self, event):
+            on_key_press(event)
 
-    try:
-        bg_image = Image.open("Gold-Brayer2.png")
-        bg_image = bg_image.resize((600, 600))
-        bg_image = ImageTk.PhotoImage(bg_image)
-        canvas = tk.Canvas(root, width=600, height=600)
-        canvas.pack(fill="both", expand=True)
-        canvas.create_image(0, 0, image=bg_image, anchor="nw")
-    except:
-        canvas = tk.Canvas(root, width=600, height=600, bg='gray')
-        canvas.pack(fill="both", expand=True)
+    main_window = SpotMainWindow()
+    main_window.setWindowTitle("Spot Control Panel")
+    main_window.setGeometry(100, 100, 800, 600)
 
-    # Initialize status_label early
-    status_label = tk.Label(root, text="Ready", font=('Arial', 12), fg="blue", bg="white")
-    status_label.place(x=250, y=400)
+    # -- Central Widget --
+    central_widget = QWidget()
+    main_window.setCentralWidget(central_widget)
 
-    # Initialize battery_label early
-    battery_label = tk.Label(root, text="Battery: N/A", font=('Arial', 12), fg="green", bg="white")
-    battery_label.place(x=50, y=50)  # Position the battery status label
+    # --- Background Image Label (scales with window) ---
+    class ResizableBackground(QLabel):
+        def __init__(self, image_path):
+            super().__init__()
+            self.image_path = image_path
+            self.setAlignment(Qt.AlignCenter)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-    # Set up camera selector dropdown
-    camera_selector = tk.StringVar()
-    camera_selector.set("frontleft")  # Default camera
+        def resizeEvent(self, event):
+            pixmap = QPixmap(self.image_path)
+            if not pixmap.isNull():
+                self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
 
-    tk.Label(root, text="Select Camera:").place(x=50, y=100)
-    camera_dropdown = tk.OptionMenu(root, camera_selector, "frontleft", "frontright", "rear", "depth", "hand", "spot-cam")
-    camera_dropdown.place(x=150, y=100)
+    bg_label = ResizableBackground("./Gold-Brayer2.png")
+    bg_label.setParent(central_widget)
+    bg_label.setGeometry(central_widget.rect())
+    bg_label.lower()  # Ensure it's behind the overlay
 
-    # Bind keypress events to on_key_press
-    root.bind_all("<Key>", on_key_press)
+    # --- Overlay widget ---
+    overlay_widget = QWidget(central_widget)  # Set central_widget as parent
+    overlay_widget.setStyleSheet("background: transparent;")
+    overlay_layout = QVBoxLayout()
+    overlay_layout.setAlignment(Qt.AlignCenter)
+    overlay_widget.setLayout(overlay_layout)
+    overlay_widget.setGeometry(central_widget.rect())  # Initially fill the central widget
 
-    # Buttons for controlling the robot, etc.
+    # -- Container with buttons/labels --
+    container = QWidget()
+    container_layout = QVBoxLayout()
+    container_layout.setAlignment(Qt.AlignHCenter)
+
+    # Battery label
+    battery_label = QLabel("Battery: N/A")
+    battery_label.setStyleSheet("color: green; font-size: 20px; font-style:bold;")
+    battery_label.setAlignment(Qt.AlignCenter)
+    container_layout.addWidget(battery_label)
+
+    # Camera selector
+    cam_layout = QHBoxLayout()
+    cam_layout.addWidget(QLabel("Select Camera:"))
+    cam_layout.setAlignment(Qt.AlignLeft)
+    camera_selector = QComboBox()
+    camera_selector.setFixedWidth(150)
+    camera_selector.setFixedHeight(30)
+    camera_selector.setStyleSheet(""" QComboBox { background-color: #2c3e50; color: white; font-size: 14px; border: 1px solid #34495e; border-radius: 5px; padding: 5px; }
+        QComboBox::drop-down { background-color: #2980b9; }
+        QComboBox::indicator { width: 20px; height: 20px; }
+        QComboBox::item { background-color: #34495e; color: white; }
+        QComboBox::item:selected { background-color: #2980b9; color: white; }""")
+    camera_selector.addItems(["frontleft", "frontright", "rear", "depth", "hand", "spot-cam"])
+    cam_layout.addWidget(camera_selector)
+    container_layout.addLayout(cam_layout)
+
+    # Camera status label
+    camera_label = QLabel("Connecting to camera...")
+    camera_label.setStyleSheet("background-color: black; color: white; font-size: 16px; padding: 5px; border-radius: 5px;")
+    container_layout.addWidget(camera_label)
     def safe_stand():
-        if wasd_interface:
+        if 'wasd_interface' in globals() and wasd_interface:
             wasd_interface._stand()
-            status_label.config(text="Command: Stand")
+            status_label.setText("Command: Stand")
         else:
-            status_label.config(text="Cannot Stand: Lease not acquired")
+            status_label.setText("Cannot Stand: Lease not acquired")
 
     def safe_sit():
-        if wasd_interface:
+        if 'wasd_interface' in globals() and wasd_interface:
             wasd_interface._sit()
-            status_label.config(text="Command: Sit")
+            status_label.setText("Command: Sit")
         else:
-            status_label.config(text="Cannot Sit: Lease not acquired")
+            status_label.setText("Cannot Sit: Lease not acquired")
+    # Status label
 
-    tk.Button(root, text="Stand", font=('arial', 12), command=safe_stand).place(x=50, y=150)
-    tk.Button(root, text="Sit", font=('arial', 12), command=safe_sit).place(x=50, y=200)
+    status_label = QLabel("Ready")
+    status_label.setStyleSheet("color: blue; font-size: 14px;")
+    container_layout.addWidget(status_label)
 
-    # Add Take Lease button
-    tk.Button(root, text="Take Lease", font=('arial', 12), command=take_lease).place(x=50, y=250)
+    # --- Spacer ---
+    spacer = QLabel("")
+    spacer.setFixedHeight(10)
+    container_layout.addWidget(spacer)
 
-    # Setup the camera feed label
-    camera_label = tk.Label(root, text="Connecting to camera...", bg='black', fg='white')
-    camera_label.place(x=150, y=430)
+    # Command buttons in a horizontal layout
+    button_layout = QHBoxLayout()  # Create a horizontal layout for buttons
+    button_layout.setAlignment(Qt.AlignCenter)
 
-    # Update the camera feed when a new camera is selected
-    camera_selector.trace("w", lambda *args: update_camera_feed())
+    # Command buttons in a horizontal layout
+    button_layout = QHBoxLayout()  # Create a horizontal layout for buttons
+    button_layout.setAlignment(Qt.AlignCenter)
 
-    # Start checking the battery status periodically
-    check_battery_status(root)
+    # Define button styles
+    button_styles = {
+        "Stand": "background-color: green; color: white; font-size: 14px;",
+        "Sit": "background-color: blue; color: white; font-size: 14px;",
+        "Take Lease": "background-color: orange; color: white; font-size: 14px;",
+        "Release Lease": "background-color: purple; color: white; font-size: 14px;",
+        "E-Stop": "background-color: red; color: white; font-size: 14px;",
+        "Stop": "background-color: yellow; color: black; font-size: 14px;",
+        "Quit": "background-color: teal; color: white; font-size: 14px;"
+    }
 
-    root.mainloop()
+    # Create buttons with styles
+    for button_text, style in button_styles.items():
+        button = QPushButton(button_text)
+        button.setStyleSheet(style)
+        button.setFixedSize(100, 40)
+        
+        # Connect the button to its respective function
+        if button_text == "Stand":
+            button.clicked.connect(safe_stand)
+        elif button_text == "Sit":
+            button.clicked.connect(safe_sit)
+        elif button_text == "Take Lease":
+            button.clicked.connect(take_lease)
+        elif button_text == "Release Lease":
+            button.clicked.connect(release_lease)
+        elif button_text == "E-Stop":
+            button.clicked.connect(startEStop)
+        elif button_text == "Stop":
+            button.clicked.connect(stopProgram)
+        elif button_text == "Quit":
+            button.clicked.connect(main_window.close)
+
+        button_layout.addWidget(button)  # Add the button to the layout
+
+    # Add the button layout to the container layout
+    container_layout.addLayout(button_layout)  # Add the button layout to the container layout
+
+    # Set the container layout
+    container.setLayout(container_layout)
+    overlay_layout.addWidget(container)
+
+    # Resize event to adjust background and overlay
+    def resize_overlay(event):
+        bg_label.setGeometry(central_widget.rect())
+        overlay_widget.setGeometry(central_widget.rect())
+
+    central_widget.resizeEvent = resize_overlay
+
+    main_window.show()
 
 def createLoginWindow():
     global login_window
-    login_window = tk.Tk()
-    login_window.geometry("400x300")
-    login_window.title("Spot Login")
+    login_window = QWidget()
+    login_window.setWindowTitle("Spot Login")
+    login_window.setGeometry(200, 200, 400, 300)
 
-    tk.Label(login_window, text="Username:").pack(pady=10)
-    username_entry = tk.Entry(login_window)
-    username_entry.pack(pady=5)
+    layout = QVBoxLayout()
 
-    tk.Label(login_window, text="Password:").pack(pady=10)
-    password_entry = tk.Entry(login_window, show="*")
-    password_entry.pack(pady=5)
+    username_input = QLineEdit()
+    password_input = QLineEdit()
+    ip_input = QLineEdit()
 
-    tk.Label(login_window, text="IP Address:").pack(pady=10)
-    ip_entry = tk.Entry(login_window)
-    ip_entry.pack(pady=5)
+    password_input.setEchoMode(QLineEdit.Password)
 
-    login_button = tk.Button(login_window, text="Login", command=lambda: run_with_inputs(username_entry.get(), password_entry.get(), ip_entry.get()))
-    login_button.pack(pady=20)
+    login_button = QPushButton("Login")
+    login_button.clicked.connect(lambda: run_with_inputs(username_input.text(), password_input.text(), ip_input.text()))
+    
+    # --- Spacer ---
+    spacer = QLabel("")
+    spacer.setFixedHeight(10)
 
-    login_window.mainloop()
+    layout.addWidget(QLabel("Username:"))
+    layout.addWidget(username_input)
+    layout.addWidget(QLabel("Password:"))
+    layout.addWidget(password_input)
+    layout.addWidget(QLabel("IP Address:"))
+    layout.addWidget(ip_input)
+    layout.addWidget(spacer)
+    layout.addWidget(login_button)
+
+    login_window.setLayout(layout)
+    login_window.show()
 
 if __name__ == "__main__":
+    app = QApplication(sys.argv)
     createLoginWindow()
-
-# Add key binding to capture keypresses and call on_key_press
-# The root window is created inside mainInterface(), so bind the key event there
-
-
+    sys.exit(app.exec_())

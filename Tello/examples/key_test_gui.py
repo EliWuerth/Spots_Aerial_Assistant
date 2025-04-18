@@ -15,7 +15,7 @@ aruco_tracking = False
 pError = 0
 camera_down = False
 human_tracking = False
-aruco_dict_type = aruco.DICT_4X4_50
+aruco_dict_type = aruco.DICT_6X6_50
 aruco_dict = aruco.getPredefinedDictionary(aruco_dict_type)
 aruco_params = aruco.DetectorParameters()
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -167,6 +167,7 @@ def go_to_aruco_and_land():
 
                     toggle_camera()  # Switch camera view
                     
+                    
                     # Drone hovers while searching for the marker
                     drone.send_rc_control(0, 0, 0, 0)
                     time.sleep(2)  # Wait before attempting to land again
@@ -188,6 +189,7 @@ def bottom_camera_and_land():
     last_seen_time = time.time()  # Record the last time the marker was seen
     landed = False  # Flag to indicate if the drone has landed
     
+    toggle_aruco_dict()
     # Get the frame from the drone's bottom camera
     frame = drone.get_frame_read().frame
     
@@ -221,6 +223,15 @@ def toggle_camera():
     except Exception as e:
         print(f"Error toggling camera: {e}")  # Log any errors encountered
     return camera_down
+
+def toggle_aruco_dict():
+        global aruco_dict_type
+        if aruco_dict_type == aruco.DICT_6X6_50:
+            aruco_dict_type = aruco.DICT_4X4_50
+            print("Switched to ArUco Dictionary: 4x4_50")
+        else:
+            aruco_dict_type = aruco.DICT_6X6_50
+            print("Switched to ArUco Dictionary: 6x6_50")
 
 # Function to show a message box indicating successful landing
 def show_landed_message():
@@ -346,7 +357,7 @@ class TelloGUI(QMainWindow):
             ("Land", self.land, "background-color: #f1c40f;"),
             ("Go To ArUco", self.start_landing_thread, "background-color: #3498db;"),
             ("Emergency Shut Off", drone.emergency, "background-color: red;"),
-            ("Toggle ArUco", self.toggle_aruco_dict, "background-color: #34495e;"),
+            ("Toggle ArUco", toggle_aruco_dict, "background-color: #34495e;"),
             ("Toggle Human", self.toggle_human_tracking, "background-color: #e67e22;")
             # ("Track Face", self.track_face, "background-color: #e67e22;"),  # Uncomment function
             # ("Track Body", self.track_body, "background-color: #2980b9;")   # Uncomment function
@@ -367,14 +378,14 @@ class TelloGUI(QMainWindow):
         container.setLayout(main_layout)  # Set the main layout for the container
         self.setCentralWidget(container)  # Set the container as the central widget
 
-    def toggle_aruco_dict(self):
-        global aruco_dict_type
-        if aruco_dict_type == aruco.DICT_4X4_50:
-            aruco_dict_type = aruco.DICT_6X6_50
-            print("Switched to ArUco Dictionary: 6x6_50")
-        else:
-            aruco_dict_type = aruco.DICT_4X4_50
-            print("Switched to ArUco Dictionary: 4x4_50")
+    # def toggle_aruco_dict(self):
+    #     global aruco_dict_type
+    #     if aruco_dict_type == aruco.DICT_6X6_50:
+    #         aruco_dict_type = aruco.DICT_4X4_50
+    #         print("Switched to ArUco Dictionary: 4x4_50")
+    #     else:
+    #         aruco_dict_type = aruco.DICT_6X6_50
+    #         print("Switched to ArUco Dictionary: 6x6_50")
 
     def set_background(self, image_path):
         # Set the background of the main window using an image

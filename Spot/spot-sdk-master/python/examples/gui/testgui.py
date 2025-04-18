@@ -16,7 +16,10 @@ import signal
 import sys
 import threading
 import time
+import numpy as np
+import cv2
 import bosdyn.client
+from bosdyn.client.image import build_image_request
 from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
 import bosdyn.client.util
 from bosdyn.client.lease import *
@@ -43,6 +46,7 @@ from bosdyn.util import duration_str, format_metric, secs_to_hms
 import bosdyn.api.power_pb2 as power_pb2
 from bosdyn.client import power
 from bosdyn.api.robot_state_pb2 import PowerState
+from bosdyn.api.image_pb2 import Image as BosdynImageFormat
 
 current_process = None
 lease_client = None
@@ -68,6 +72,12 @@ status_label = None
 battery_label = None
 canvas = None
 root = None
+
+# Global variables
+streaming = False
+current_camera_index = 0
+fisheye_cameras = ["frontleft_fisheye_image","frontright_fisheye_image","left_fisheye_image","right_fisheye_image","back_fisheye_image"]
+image_client = None  # You must initialize this properly
 
 # from the wasd.py file
 def _image_to_ascii(image, new_width):
@@ -625,6 +635,16 @@ def check_battery_status(widget):
         if battery_states:
             battery_percentage = battery_states[0].charge_percentage.value
             battery_label.setText(f"Battery: {battery_percentage:.1f}%")
+
+            # Color change based on percentage
+            if battery_percentage >= 60:
+                color = "green"
+            elif battery_percentage >= 30:
+                color = "orange"
+            else:
+                color = "red"
+
+            battery_label.setStyleSheet(f"color: {color}; font-size: 20px; font-style:bold;")
         else:
             battery_label.setText("Battery info unavailable")
 
@@ -695,17 +715,17 @@ def release_lease():
         lease_keep_alive.shutdown()
     if lease_client:
         lease_client.return_lease()
-    status_label.config(text="Lease released")
+    status_label.setText("Lease released")
 
 def stopProgram():
     release_lease()
-    status_label.config(text="Stopped - Lease released")
+    status_label.setText("Stopped - Lease released")
 
 def startEStop():
     try:
-        status_label.config(text="E-Stop engaged (mock)")
+        status_label.setText("E-Stop engaged (mock)")
     except Exception as e:
-        status_label.config(text=f"E-Stop error: {str(e)}")
+        status_label.setText(f"E-Stop error: {str(e)}")
 
 def move_robot(v_x, v_y, v_rot):
     global robot, command_client, status_label
@@ -749,27 +769,27 @@ def on_key_press(event):
         status_label.setText(f"Key error: {str(e)}")
         print(f"Key press error: {e}")
 
-def update_camera_feed():
-    global image_client
-    try:
-        selected_camera = camera_selector.currentText()
-        image_response = image_client.get_image_from_sources([selected_camera])[0]
-        img_data = image_response.shot.image.data
-        cols = image_response.shot.image.cols
-        rows = image_response.shot.image.rows
+# def update_camera_feed():
+#     global image_client
+#     try:
+#         selected_camera = camera_selector.currentText()
+#         image_response = image_client.get_image_from_sources([selected_camera])[0]
+#         img_data = image_response.shot.image.data
+#         cols = image_response.shot.image.cols
+#         rows = image_response.shot.image.rows
 
-        if not img_data:
-            camera_label.setText("No image data")
-            return
+#         if not img_data:
+#             camera_label.setText("No image data")
+#             return
 
-        q_image = QImage(img_data, cols, rows, QImage.Format_Grayscale8)
-        pixmap = QPixmap.fromImage(q_image).scaled(300, 200)
-        camera_label.setPixmap(pixmap)
-    except Exception as e:
-        camera_label.setText(f"Camera Error:\n{str(e)}")
-        camera_label.setPixmap(QPixmap())
+#         q_image = QImage(img_data, cols, rows, QImage.Format_Grayscale8)
+#         pixmap = QPixmap.fromImage(q_image).scaled(300, 200)
+#         camera_label.setPixmap(pixmap)
+#     except Exception as e:
+#         camera_label.setText(f"Camera Error:\n{str(e)}")
+#         camera_label.setPixmap(QPixmap())
 
-    QTimer.singleShot(100, update_camera_feed)
+#     QTimer.singleShot(100, update_camera_feed)
 
 def run_with_inputs(username, password, ip):
     if not username or not password or not ip:
@@ -785,6 +805,141 @@ def run_with_inputs(username, password, ip):
     login_window.close()
     mainInterface()
 
+def start_video_stream():
+    global streaming
+    streaming = True
+    update_video_frame()
+
+def stop_video_stream():
+    global streaming
+    streaming = False
+    status_label.setText("Camera stream stopped")
+
+# def update_video_frame():
+#     global streaming, image_client, camera_label, current_camera_index
+
+#     if not streaming:
+#         return
+
+#     try:
+#         camera_name = fisheye_cameras[current_camera_index]
+#         response = image_client.get_image_from_sources([camera_name])[0]
+#         img_data = response.shot.image.data
+#         width = response.shot.image.cols
+#         height = response.shot.image.rows
+#         pixel_format = response.shot.image.pixel_format
+
+#         # Decode image
+#         if response.shot.image.format == BosdynImageFormat.FORMAT_JPEG:
+#             image_np = np.frombuffer(img_data, np.uint8)
+#             decoded_image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+#             decoded_image = cv2.cvtColor(decoded_image, cv2.COLOR_BGR2RGB)
+#             img = Image.fromarray(decoded_image).rotate(-90, expand=True)
+#         else:
+#             if pixel_format == BosdynImageFormat.PIXEL_FORMAT_GREYSCALE_U8:
+#                 mode = 'L'
+#             elif pixel_format == BosdynImageFormat.PIXEL_FORMAT_RGB_U8:
+#                 mode = 'RGB'
+#             elif pixel_format == BosdynImageFormat.PIXEL_FORMAT_RGBA_U8:
+#                 mode = 'RGBA'
+#             else:
+#                 camera_label.setText(f"Unsupported pixel format: {pixel_format}")
+#                 return
+
+#             expected_bytes = width * height * len(mode)
+#             if len(img_data) < expected_bytes:
+#                 camera_label.setText("Not enough image data")
+#                 return
+
+#             img = Image.frombytes(mode, (width, height), img_data)
+
+#         # Resize for display
+#         img = img.resize((320, 240))
+
+#         # Convert to QImage and set in QLabel
+#         if img.mode == 'RGB':
+#             qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888)
+#         elif img.mode == 'RGBA':
+#             qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGBA8888)
+#         elif img.mode == 'L':
+#             qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format_Grayscale8)
+#         else:
+#             camera_label.setText("Unsupported image mode")
+#             return
+
+#         camera_label.setPixmap(QPixmap.fromImage(qimg))
+#         camera_label.setText("")  # Clear text
+#         status_label.setText(f"Streaming: {camera_name}")
+
+#     except Exception as e:
+#         camera_label.setText(f"Error: {str(e)}")
+#         # print("Camera stream error:", e)
+
+#     QTimer.singleShot(100, update_video_frame)
+
+def update_video_frame():
+    global streaming, image_client, camera_label, current_camera_index
+
+    if not streaming:
+        return
+
+    try:
+        camera_name = fisheye_cameras[current_camera_index]
+        response = image_client.get_image_from_sources([camera_name])[0]
+        img_data = response.shot.image.data
+        width = response.shot.image.cols
+        height = response.shot.image.rows
+        pixel_format = response.shot.image.pixel_format
+
+        # Decode image
+        if response.shot.image.format == BosdynImageFormat.FORMAT_JPEG:
+            image_np = np.frombuffer(img_data, np.uint8)
+            decoded_image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+            decoded_image = cv2.cvtColor(decoded_image, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(decoded_image).rotate(-90, expand=True)
+        else:
+            if pixel_format == BosdynImageFormat.PIXEL_FORMAT_GREYSCALE_U8:
+                mode = 'L'
+            elif pixel_format == BosdynImageFormat.PIXEL_FORMAT_RGB_U8:
+                mode = 'RGB'
+            elif pixel_format == BosdynImageFormat.PIXEL_FORMAT_RGBA_U8:
+                mode = 'RGBA'
+            else:
+                camera_label.setText(f"Unsupported pixel format: {pixel_format}")
+                return
+
+            expected_bytes = width * height * len(mode)
+            if len(img_data) < expected_bytes:
+                camera_label.setText("Not enough image data")
+                return
+
+            img = Image.frombytes(mode, (width, height), img_data).rotate(-90, expand=True)
+
+            # Convert grayscale to RGB for display
+            if mode == 'L':
+                img = img.convert("RGB")
+
+        # Resize for display
+        img = img.resize((640, 480))  # Make it bigger
+
+        # Convert to QImage and set in QLabel
+        qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format_RGB888)
+        camera_label.setPixmap(QPixmap.fromImage(qimg))
+        camera_label.setText("")  # Clear any old error text
+        status_label.setText(f"Streaming: {camera_name}")
+
+    except Exception as e:
+        camera_label.setText(f" v")
+        # print("Camera stream error:", e)
+
+    QTimer.singleShot(100, update_video_frame)
+
+def next_camera():
+    global current_camera_index
+    current_camera_index = (current_camera_index + 1) % len(fisheye_cameras)
+    camera_selector.setCurrentIndex(current_camera_index)
+    status_label.setText(f"Switched to: {fisheye_cameras[current_camera_index]}")
+
 def mainInterface():
     global status_label, battery_label, camera_label, main_window, camera_selector
 
@@ -794,7 +949,7 @@ def mainInterface():
 
     main_window = SpotMainWindow()
     main_window.setWindowTitle("Spot Control Panel")
-    main_window.setGeometry(100, 100, 800, 600)
+    main_window.setGeometry(100, 100, 800, 900)
 
     # -- Central Widget --
     central_widget = QWidget()
@@ -835,28 +990,51 @@ def mainInterface():
     battery_label = QLabel("Battery: N/A")
     battery_label.setStyleSheet("color: green; font-size: 20px; font-style:bold;")
     battery_label.setAlignment(Qt.AlignCenter)
+    battery_timer = QTimer()
+    battery_timer.timeout.connect(lambda: check_battery_status(main_window))
+    battery_timer.start(5000)  # update every 5 seconds
+    check_battery_status(main_window)  # initial call
     container_layout.addWidget(battery_label)
 
     # Camera selector
     cam_layout = QHBoxLayout()
-    cam_layout.addWidget(QLabel("Select Camera:"))
+    cam_layout.addWidget(QLabel("Select Camera:").setStyleSheet("color: white; font-style:bold; font-size: 14px;"))
     cam_layout.setAlignment(Qt.AlignLeft)
     camera_selector = QComboBox()
-    camera_selector.setFixedWidth(150)
+    camera_selector.setFixedWidth(160)
     camera_selector.setFixedHeight(30)
     camera_selector.setStyleSheet(""" QComboBox { background-color: #2c3e50; color: white; font-size: 14px; border: 1px solid #34495e; border-radius: 5px; padding: 5px; }
         QComboBox::drop-down { background-color: #2980b9; }
         QComboBox::indicator { width: 20px; height: 20px; }
         QComboBox::item { background-color: #34495e; color: white; }
         QComboBox::item:selected { background-color: #2980b9; color: white; }""")
-    camera_selector.addItems(["frontleft", "frontright", "rear", "depth", "hand", "spot-cam"])
+    camera_selector.addItems(fisheye_cameras)
     cam_layout.addWidget(camera_selector)
     container_layout.addLayout(cam_layout)
 
-    # Camera status label
+    next_cam_button = QPushButton("Next Camera")
+    next_cam_button.setStyleSheet("background-color: #1abc9c; color: white; font-size: 14px;")
+    next_cam_button.setFixedSize(120, 30)
+    next_cam_button.clicked.connect(next_camera)
+    cam_layout.addWidget(next_cam_button)
+
+    # Sync selector to index
+    def camera_changed(index):
+        global current_camera_index
+        current_camera_index = index
+        status_label.setText(f"Switched to: {fisheye_cameras[index]}")
+
+    camera_selector.currentIndexChanged.connect(camera_changed)
+
+    # Camera display
     camera_label = QLabel("Connecting to camera...")
     camera_label.setStyleSheet("background-color: black; color: white; font-size: 16px; padding: 5px; border-radius: 5px;")
+    camera_label.setAlignment(Qt.AlignCenter)
+    camera_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    camera_label.setMinimumSize(640, 480)
+    camera_label.setScaledContents(True)
     container_layout.addWidget(camera_label)
+    
     def safe_stand():
         if 'wasd_interface' in globals() and wasd_interface:
             wasd_interface._stand()
@@ -870,11 +1048,12 @@ def mainInterface():
             status_label.setText("Command: Sit")
         else:
             status_label.setText("Cannot Sit: Lease not acquired")
+    
     # Status label
-
     status_label = QLabel("Ready")
     status_label.setStyleSheet("color: blue; font-size: 14px;")
-    container_layout.addWidget(status_label)
+    # status_label.setHidden()
+    # container_layout.addWidget(status_label)
 
     # --- Spacer ---
     spacer = QLabel("")
@@ -939,6 +1118,8 @@ def mainInterface():
     central_widget.resizeEvent = resize_overlay
 
     main_window.show()
+
+    start_video_stream()
 
 def createLoginWindow():
     global login_window

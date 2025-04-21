@@ -14,11 +14,19 @@ drone = Tello()
 aruco_tracking = False
 pError = 0
 camera_down = False
+face_tracking = False
+body_tracking = False
 human_tracking = False
 aruco_dict_type = aruco.DICT_6X6_50
 aruco_dict = aruco.getPredefinedDictionary(aruco_dict_type)
 aruco_params = aruco.DetectorParameters()
+
+# Load cascades
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+full_body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fullbody.xml')
+upper_body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_upperbody.xml')
+lower_body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_lowerbody.xml')
 
 # Constants
 SPEED = 60
@@ -26,25 +34,94 @@ PID = [0.3, 0.0005, 0.1]  # Reduced proportional gain
 LANDING_THRESHOLD = 1500  # Increased to avoid premature landing
 DISTANCE_THRESHOLD = 20  # Distance threshold for moving forward
 
-def find_human(img, tracking_enabled=True):
-    if img is None or not tracking_enabled:
+# Function to find a human face in the provided image frame
+def find_human(img):
+    global face_tracking
+
+    # Return early if there's no image or face tracking is disabled
+    if img is None or not face_tracking:
         return [0, 0], img
 
+    # Convert the image to grayscale to improve face detection performance
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
 
-    if len(faces) > 0:
-        (x, y, w, h) = faces[0]  # Use the first detected face
-        cx = x + w // 2
-        cy = y + h // 2
+    # Try each classifier in order of preference
+    detectors = [
+        ('Face', face_cascade),
+        ('Profile', profile_cascade),
+        ('Full Body', full_body_cascade),
+        ('Upper Body', upper_body_cascade),
+        ('Lower Body', lower_body_cascade),
+    ]
 
-        # Draw a rectangle and center point
-        cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 255), 2)
-        cv2.circle(img, (cx, cy), 5, (0, 255, 0), cv2.FILLED)
+    for label, cascade in detectors:
+        bodies = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+        if len(bodies) > 0:
+            (x, y, w, h) = bodies[0]  # Use the first detected target
+            cx = x + w // 2
+            cy = y + h // 2
 
-        return [cx, cy], img
+            # Draw bounding box and label
+            cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 255), 2)
+            cv2.putText(img, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            cv2.circle(img, (cx, cy), 5, (0, 255, 0), cv2.FILLED)
+            
+            # Return the center coordinates of the face and the annotated image
+            return [cx, cy], img
 
+    # If no face is found, return default coordinates and the original image
     return [0, 0], img
+
+# Function to track a detected human face using the drone
+def track_human():
+    global pError, face_tracking
+    face_tracking = True
+
+    while face_tracking:
+        try:
+            # Get the current frame from the drone's camera
+            img = drone.get_frame_read().frame
+
+            # If the frame is invalid or empty, skip this iteration
+            if img is None or img.size == 0:
+                continue
+
+            frame = cv2.resize(img, (640, 480))
+
+            # Detect face and get center coordinates from the frame
+            info, annotated_frame = find_human(frame)
+
+            if info[0] != 0:
+                # Calculate the error between face center and frame center (x-axis)
+                error = info[0] - frame.shape[1] // 2
+
+                # Apply PID controller to compute yaw adjustment
+                p = PID[0] * error
+                i = PID[1] * (error + pError)
+                d = PID[2] * (error - pError)
+                yaw_velocity = int(p + i + d)
+
+                # Constrain yaw velocity within allowable speed limits
+                yaw_velocity = max(min(yaw_velocity, SPEED), -SPEED)
+
+                # Send control command to adjust drone's yaw (rotation)
+                drone.send_rc_control(0, 0, 0, yaw_velocity)
+
+                print(f"Yaw to track human: {yaw_velocity}")
+
+                # Update previous error for PID calculation
+                pError = error
+            else:
+                # If no face is detected, stop yaw movement
+                drone.send_rc_control(0, 0, 0, 0)
+
+            time.sleep(0.1)
+        except Exception as e:
+            # Print any error that occurs and break the loop
+            print(f"Error in human tracking: {e}")
+            break
+
+    face_tracking = False
 
 # ArUco detection function
 def find_aruco(img):
@@ -166,7 +243,7 @@ def go_to_aruco_and_land():
                     time.sleep(1)  # Wait for a second
 
                     toggle_camera()  # Switch camera view
-                    
+                    toggle_aruco_dict()
                     
                     # Drone hovers while searching for the marker
                     drone.send_rc_control(0, 0, 0, 0)
@@ -189,7 +266,6 @@ def bottom_camera_and_land():
     last_seen_time = time.time()  # Record the last time the marker was seen
     landed = False  # Flag to indicate if the drone has landed
     
-    toggle_aruco_dict()
     # Get the frame from the drone's bottom camera
     frame = drone.get_frame_read().frame
     
@@ -224,20 +300,10 @@ def toggle_camera():
         print(f"Error toggling camera: {e}")  # Log any errors encountered
     return camera_down
 
-def toggle_aruco_dict():
-        global aruco_dict_type
-        if aruco_dict_type == aruco.DICT_6X6_50:
-            aruco_dict_type = aruco.DICT_4X4_50
-            print("Switched to ArUco Dictionary: 4x4_50")
-        else:
-            aruco_dict_type = aruco.DICT_6X6_50
-            print("Switched to ArUco Dictionary: 6x6_50")
-
 # Function to show a message box indicating successful landing
 def show_landed_message():
     # Create a message box to inform the user about the landing status
     msg = QMessageBox()
-    msg.setIcon(QMessageBox.about)  # Set the icon for the message box
     msg.setText("Drone landing successful!")  # Set the message text
     msg.setWindowTitle("Landing Status")  # Set the title of the message box
     msg.exec_()  # Display the message box
@@ -257,6 +323,18 @@ def show_loading_message(timeout_ms=3000):
     timer.start(timeout_ms)  # Start the timer with the specified timeout
 
     msg.exec_()  # Display the message box
+
+# Function to toggle between two types of ArUco marker dictionaries
+def toggle_aruco_dict():
+    global aruco_dict_type
+    
+    # Toggle between two ArUco dictionaries
+    if aruco_dict_type == aruco.DICT_6X6_50:
+        aruco_dict_type = aruco.DICT_4X4_50
+        print("Switched to ArUco Dictionary: 4x4_50")
+    else:
+        aruco_dict_type = aruco.DICT_6X6_50
+        print("Switched to ArUco Dictionary: 6x6_50")
 
 # GUI Class
 class TelloGUI(QMainWindow):
@@ -358,9 +436,7 @@ class TelloGUI(QMainWindow):
             ("Go To ArUco", self.start_landing_thread, "background-color: #3498db;"),
             ("Emergency Shut Off", drone.emergency, "background-color: red;"),
             ("Toggle ArUco", toggle_aruco_dict, "background-color: #34495e;"),
-            ("Toggle Human", self.toggle_human_tracking, "background-color: #e67e22;")
-            # ("Track Face", self.track_face, "background-color: #e67e22;"),  # Uncomment function
-            # ("Track Body", self.track_body, "background-color: #2980b9;")   # Uncomment function
+            ("Toggle Human", self.start_human_tracking, "background-color: #e67e22;")
         ]
 
         # Create buttons for drone control and tracking
@@ -378,15 +454,6 @@ class TelloGUI(QMainWindow):
         container.setLayout(main_layout)  # Set the main layout for the container
         self.setCentralWidget(container)  # Set the container as the central widget
 
-    # def toggle_aruco_dict(self):
-    #     global aruco_dict_type
-    #     if aruco_dict_type == aruco.DICT_6X6_50:
-    #         aruco_dict_type = aruco.DICT_4X4_50
-    #         print("Switched to ArUco Dictionary: 4x4_50")
-    #     else:
-    #         aruco_dict_type = aruco.DICT_6X6_50
-    #         print("Switched to ArUco Dictionary: 6x6_50")
-
     def set_background(self, image_path):
         # Set the background of the main window using an image
         palette = QPalette()
@@ -395,26 +462,27 @@ class TelloGUI(QMainWindow):
         self.setPalette(palette)
 
     def update_frame(self):
-        # Update the video frame displayed in the GUI
         frame_read = drone.get_frame_read()
         if frame_read is None:
-            print("Failed to get frame read object.")  # Log error if frame read fails
+            print("Failed to get frame read object.")
             return
         
-        img = frame_read.frame # Extract the frame
+        img = frame_read.frame
         if img is None or img.size == 0:
             print("Warning: Empty frame received from drone. Skipping...")
             return
 
-        # Resize and process the image for ArUco detection
         img = cv2.resize(img, (640, 480))
-        aruco_info, area, processed_frame = find_aruco(img)  # Detect ArUco markers
 
-        # Convert to QImage and display
-        h, w, ch = processed_frame.shape  # Get dimensions of the processed frame
-        bytes_per_line = ch * w  # Calculate bytes per line for QImage
-        qt_image = QImage(processed_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)  # Create QImage
-        self.video_label.setPixmap(QPixmap.fromImage(qt_image))  # Set the pixmap for the video label
+        if face_tracking:
+            _, processed_frame = find_human(img)
+        else:
+            _, _, processed_frame = find_aruco(img)
+
+        h, w, ch = processed_frame.shape
+        bytes_per_line = ch * w
+        qt_image = QImage(processed_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        self.video_label.setPixmap(QPixmap.fromImage(qt_image))
 
     def update_battery(self):
         try:
@@ -470,55 +538,8 @@ class TelloGUI(QMainWindow):
         self.thread.start()
 
     def start_human_tracking(self):
-        self.thread = threading.Thread(target=self.track_human, daemon=True)
+        self.thread = threading.Thread(target=track_human, daemon=True)
         self.thread.start()
-
-    def toggle_human_tracking(self):
-        if not self.human_tracking:
-            print("Starting human tracking...")
-            self.human_tracking = True
-            self.thread = threading.Thread(target=self.track_human, daemon=True)
-            self.thread.start()
-        else:
-            print("Stopping human tracking...")
-            self.human_tracking = False
-    
-    def track_human(self):
-        global pError
-        while self.human_tracking:
-            try:
-                img = drone.get_frame_read().frame
-                if img is None or img.size == 0:
-                    continue
-
-                frame = cv2.resize(img, (640, 480))
-                info, annotated_frame = find_human(frame, tracking_enabled=self.human_tracking)
-
-                if info[0] != 0:
-                    error = info[0] - frame.shape[1] // 2
-                    p = PID[0] * error
-                    i = PID[1] * (error + pError)
-                    d = PID[2] * (error - pError)
-                    yaw_velocity = int(p + i + d)
-                    yaw_velocity = max(min(yaw_velocity, SPEED), -SPEED)
-
-                    drone.send_rc_control(0, 0, 0, yaw_velocity)
-                    print(f"Yaw to track human: {yaw_velocity}")
-
-                    pError = error
-                else:
-                    drone.send_rc_control(0, 0, 0, 0)
-
-                time.sleep(0.1)
-
-            except Exception as e:
-                print(f"Error in human tracking: {e}")
-                break
-
-        # After loop exits
-        drone.send_rc_control(0, 0, 0, 0)
-        print("Exited human tracking loop.")
-        self.human_tracking = False
 
     def safe_go_to_aruco_and_land(self):
         # Execute the landing sequence safely

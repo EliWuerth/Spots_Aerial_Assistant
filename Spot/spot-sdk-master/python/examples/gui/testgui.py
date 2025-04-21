@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 from PyQt5 import QtWidgets, QtGui, QtCore
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QComboBox, QMessageBox, QStackedLayout,QSizePolicy)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QComboBox, QMessageBox, QStackedLayout, QSizePolicy)
 from PyQt5.QtGui import QPalette, QPixmap, QBrush, QImage, QIcon
 from PyQt5.QtCore import Qt, QTimer
 import sys
@@ -47,6 +47,19 @@ import bosdyn.api.power_pb2 as power_pb2
 from bosdyn.client import power
 from bosdyn.api.robot_state_pb2 import PowerState
 from bosdyn.api.image_pb2 import Image as BosdynImageFormat
+from bosdyn.client.robot_command import RobotCommandBuilder
+import bosdyn.geometry
+from bosdyn.api import trajectory_pb2
+from bosdyn.api.spot import robot_command_pb2 as spot_command_pb2
+from bosdyn.client import math_helpers
+from bosdyn.client.robot_command import RobotCommandBuilder
+from bosdyn.geometry import EulerZXY
+from bosdyn.client.robot_command import RobotCommandBuilder
+from bosdyn.client.math_helpers import Quat
+from bosdyn.api import geometry_pb2, trajectory_pb2
+import bosdyn.client.math_helpers as math_helpers
+from google.protobuf.duration_pb2 import Duration
+from google.protobuf.timestamp_pb2 import Timestamp
 
 current_process = None
 lease_client = None
@@ -60,16 +73,27 @@ wasd_interface = None
 VALID_USERNAME = "user2"
 VALID_PASSWORD = "simplepassword"
 VALID_IP = "192.168.80.3"
+IP = ""
 VELOCITY_CMD_DURATION = 0.6  # seconds
 MAX_LINEAR_VELOCITY = 0.5  # m/s
 MAX_ANGULAR_VELOCITY = 0.8  # rad/s
-
 LOGGER = logging.getLogger()
-
 VELOCITY_BASE_SPEED = 0.5  # m/s
 VELOCITY_BASE_ANGULAR = 0.8  # rad/sec
 VELOCITY_CMD_DURATION = 0.6  # seconds
 COMMAND_INPUT_RATE = 0.1
+BODY_HEIGHT_MIN = -0.2
+BODY_HEIGHT_MAX = 0.2
+BODY_HEIGHT_STEP = 0.02
+PITCH_MIN = -0.5
+PITCH_MAX = 0.5
+PITCH_STEP = 0.05
+ROLL_MIN = -0.5
+ROLL_MAX = 0.5
+ROLL_STEP = 0.05
+YAW_MIN = -1.0
+YAW_MAX = 1.0
+YAW_STEP = 0.1
 
 camera_label = None
 status_label = None
@@ -202,14 +226,11 @@ class WasdInterface(object):
     """A curses interface for driving the robot."""
     def __init__(self, robot):
         self._robot = robot
-        print("WasdInterface: __init__ called")  # Added debug log
-        # Create clients -- do not use the for communication yet.
         self._lease_client = robot.ensure_client(LeaseClient.default_service_name)
         try:
             self._estop_client = self._robot.ensure_client(EstopClient.default_service_name)
             self._estop_endpoint = EstopEndpoint(self._estop_client, 'GNClient', 9.0)
         except:
-            # Not the estop.
             self._estop_client = None
             self._estop_endpoint = None
         self._power_client = robot.ensure_client(PowerClient.default_service_name)
@@ -219,13 +240,17 @@ class WasdInterface(object):
         self._image_task = AsyncImageCapture(robot)
         self._async_tasks = AsyncTasks([self._robot_state_task, self._image_task])
         self._lock = threading.Lock()
+        self._body_height = 0.0
+        self._body_pitch = 0.0
+        self._body_roll = 0.0
+        self._body_yaw = 0.0  # NEW: Yaw support
         self._command_dictionary = {
             27: self._stop,  # ESC key
             '\t': self._quit_program,
             't': self._toggle_time_sync,
             ' ': self._toggle_estop,
             'r': self._self_right,
-            'P': self._toggle_power,
+            'o': self._toggle_power,
             'p': self._toggle_power,
             'v': self._sit,
             'b': self._battery_change_pose,
@@ -237,18 +262,106 @@ class WasdInterface(object):
             'q': self._turn_left,
             'e': self._turn_right,
             'i': self._image_task.take_image,
-            'O': self._image_task.toggle_video_mode,
-            'u': self._unstow,
-            'j': self._stow,
-            'l': self._toggle_lease
+            'k': self._image_task.toggle_video_mode,
+            'u': self._yaw_right,     # NEW
+            'y': self._yaw_left,      # NEW
+            'n': self._roll_left,
+            'm': self._roll_right,
+            'g': self._tilt_backward,
+            'h': self._tilt_forward,
+            'z': self._increase_body_height,
+            'x': self._decrease_body_height,
+            'c': self._reset_posture   # NEW
         }
-        self._locked_messages = ['', '', '']  # string: displayed message for user
+        self._locked_messages = ['', '', '']
         self._estop_keepalive = None
         self._exit_check = None
-
-        # Stuff that is set in start()
         self._robot_id = None
         self._lease_keepalive = None
+
+    def _tilt_forward(self):
+        self._body_pitch += PITCH_STEP
+        self.send_pitch_command(self._body_pitch)
+
+    def _tilt_backward(self):
+        self._body_pitch -= PITCH_STEP
+        self.send_pitch_command(self._body_pitch)
+
+    def _roll_left(self):
+        self._body_roll += ROLL_STEP
+        self.send_roll_command(self._body_roll)
+
+    def _roll_right(self):
+        self._body_roll -= ROLL_STEP
+        self.send_roll_command(self._body_roll)
+        self._body_roll = max(ROLL_MIN, self._body_roll - ROLL_STEP)
+        self._send_orientation_command()
+
+    def _yaw_left(self):
+        self._body_yaw = max(YAW_MIN, self._body_yaw - YAW_STEP)
+        self.send_yaw_command(self._body_yaw)
+
+    def _yaw_right(self):
+        self._body_yaw = min(YAW_MAX, self._body_yaw + YAW_STEP)
+        self.send_yaw_command(self._body_yaw)
+
+    def _increase_body_height(self):
+        self._body_height = min(BODY_HEIGHT_MAX, self._body_height + BODY_HEIGHT_STEP)
+        self._send_body_height_command()
+
+    def _decrease_body_height(self):
+        self._body_height = max(BODY_HEIGHT_MIN, self._body_height - BODY_HEIGHT_STEP)
+        self._send_body_height_command()
+
+    def _reset_posture(self):
+        self._body_pitch = 0.0
+        self._body_roll = 0.0
+        self._body_yaw = 0.0
+        self._body_height = 0.0
+        self._send_orientation_command()
+    
+    def adjust_orientation(self):
+        """Adjust the robot's orientation using the current roll, pitch, yaw values."""
+        # Convert Euler angles (roll, pitch, yaw) to a gravity-aligned body frame.
+        footprint_R_body = EulerZXY(yaw=self._body_yaw, roll=self._body_roll, pitch=self._body_pitch)
+        
+        # Build the command to apply this orientation in the body frame.
+        command = RobotCommandBuilder.synchro_stand_command(footprint_R_body=footprint_R_body)
+        
+        # Send the command to the robot to adjust its orientation.
+        self._send_robot_command(command)
+        
+        # Optionally, display the updated angles.
+        print(f"Pitch: {self._body_pitch:.2f}, Roll: {self._body_roll:.2f}, Yaw: {self._body_yaw:.2f}, Height: {self._body_height:.2f}")
+
+    def send_yaw_command(self, yaw_rad):
+        roll = 0.0
+        pitch = 0.0
+        footprint_R_body = EulerZXY(yaw=yaw_rad, roll=roll, pitch=pitch)
+        command = RobotCommandBuilder.synchro_stand_command(footprint_R_body=footprint_R_body)
+        self._start_robot_command('adjust_body_height', command, end_time_secs=time.time() + VELOCITY_CMD_DURATION)
+
+    def send_pitch_command(self, pitch_rad):
+        roll = 0.0
+        yaw = 0.0
+        footprint_R_body = EulerZXY(yaw=yaw, roll=roll, pitch=pitch_rad)
+        command = RobotCommandBuilder.synchro_stand_command(footprint_R_body=footprint_R_body)
+        self._start_robot_command('adjust_body_height', command, end_time_secs=time.time() + VELOCITY_CMD_DURATION)
+
+    def send_roll_command(self, roll_rad):
+        pitch = 0.0
+        yaw = 0.0
+        footprint_R_body = EulerZXY(yaw=yaw, roll=roll_rad, pitch=pitch)
+        command = RobotCommandBuilder.synchro_stand_command(footprint_R_body=footprint_R_body)
+        self._start_robot_command('adjust_body_height', command, end_time_secs=time.time() + VELOCITY_CMD_DURATION)
+
+    def _send_body_height_command(self):
+        command = RobotCommandBuilder.synchro_velocity_command(
+            v_x=0.0, v_y=0.0, v_rot=0.0,
+            body_height=self._body_height
+        )
+        self._start_robot_command('adjust_body_height', command, end_time_secs=time.time() + VELOCITY_CMD_DURATION)
+        self.add_message(f'Height: {self._body_height:.2f} m')
 
     def start(self):
         """Begin communication with the robot."""
@@ -335,6 +448,7 @@ class WasdInterface(object):
         stdscr.addstr(3, 0, self._estop_str())
         stdscr.addstr(4, 0, self._power_state_str())
         stdscr.addstr(5, 0, self._time_sync_str())
+        stdscr.addstr(6, 0, f'Body height: {self._body_height:.2f} m')
         for i in range(3):
             stdscr.addstr(7 + i, 2, self.message(i))
         stdscr.addstr(10, 0, 'Commands: [TAB]: quit                               ')
@@ -344,8 +458,9 @@ class WasdInterface(object):
         stdscr.addstr(14, 0, '          [v]: Sit, [b]: Battery-change             ')
         stdscr.addstr(15, 0, '          [wasd]: Directional strafing              ')
         stdscr.addstr(16, 0, '          [qe]: Turning, [ESC]: Stop                ')
-        stdscr.addstr(17, 0, '          [l]: Return/Acquire lease                 ')
-        stdscr.addstr(18, 0, '')
+        stdscr.addstr(17, 0, '          [↑/↓] or [x/z]: Raise/lower body height    ')
+        stdscr.addstr(18, 0, '          [l]: Return/Acquire lease                 ')
+        stdscr.addstr(19, 0, '')
 
         # print as many lines of the image as will fit on the curses screen
         if self._image_task.ascii_image is not None:
@@ -612,7 +727,7 @@ def _setup_logging(verbose):
     return stream_handler
 
 def check_battery_status(widget):
-    global battery_label, IP, robot
+    global battery_label, VALID_IP, robot
 
     username = os.environ.get('BOSDYN_CLIENT_USERNAME')
     password = os.environ.get('BOSDYN_CLIENT_PASSWORD')
@@ -628,7 +743,7 @@ def check_battery_status(widget):
     try:
         if not robot:
             sdk = bosdyn.client.create_standard_sdk("Battery Check")
-            robot = sdk.create_robot(VALID_IP)
+            robot = sdk.create_robot(IP)
             robot.authenticate(username, password)
 
         state_client = robot.ensure_client(RobotStateClient.default_service_name)
@@ -670,7 +785,7 @@ def wait_for_power_on(robot, timeout_sec=20):
     raise TimeoutError("Timed out waiting for robot to power.")
 
 def take_lease():
-    global lease_client, lease_keep_alive, robot, command_client, image_client, wasd_interface
+    global lease_client, lease_keep_alive, robot, command_client, image_client, wasd_interface, lease
     try:
         sdk = create_standard_sdk("SpotController")
         robot = sdk.create_robot(IP)
@@ -714,12 +829,16 @@ def take_lease():
         return False
 
 def release_lease():
-    global lease_keep_alive, lease_client
-    if lease_keep_alive:
-        lease_keep_alive.shutdown()
-    if lease_client:
-        lease_client.return_lease()
-    status_label.setText("Lease released")
+    global lease_keep_alive, lease_client, lease
+    try:
+        if lease_keep_alive:
+            lease_keep_alive.shutdown()
+        if lease_client and lease:
+            lease_client.return_lease(lease)
+            lease = None  # Clear the lease
+        status_label.setText("Lease released")
+    except Exception as e:
+        status_label.setText(f"Error releasing lease: {str(e)}")
 
 def stopProgram():
     release_lease()
@@ -787,6 +906,9 @@ def run_with_inputs(username_input, password_input, ip_input, login_window, erro
     os.environ['BOSDYN_CLIENT_USERNAME'] = username
     os.environ['BOSDYN_CLIENT_PASSWORD'] = password
 
+    global IP
+    IP = ip
+
     # Validate the credentials and IP address
     if username == VALID_USERNAME and password == VALID_PASSWORD and ip == VALID_IP:
         login_window.close()  # Close the login window
@@ -799,25 +921,34 @@ def run_with_inputs(username_input, password_input, ip_input, login_window, erro
         password_input.clear()
         ip_input.clear()
 
-def start_video_stream():
-    global streaming
-    streaming = True
-    update_video_frame()
-
-def stop_video_stream():
-    global streaming
-    streaming = False
-    status_label.setText("Camera stream stopped")
-
 def next_camera():
     global current_camera_index
     current_camera_index = (current_camera_index + 1) % len(fisheye_cameras)
     camera_selector.setCurrentIndex(current_camera_index)
     status_label.setText(f"Switched to: {fisheye_cameras[current_camera_index]}")
 
+def start_video_stream():
+    global streaming, video_timer
+    if not streaming:
+        streaming = True
+        video_timer.start(100)  # Start the timer
+        status_label.setText("Camera stream started")
+
+def stop_video_stream():
+    global streaming, video_timer
+    streaming = False
+    if video_timer.isActive():
+        video_timer.stop()  # Stop the timer
+
+    # Create a black QPixmap and set it to the camera label
+    black_pixmap = QPixmap(camera_label.width(), camera_label.height())
+    black_pixmap.fill(Qt.black)
+    camera_label.setPixmap(black_pixmap)
+
+    status_label.setText("Camera stream stopped")
+
 def update_video_frame():
     global streaming, image_client, camera_label, current_camera_index
-
     if not streaming:
         return
 
@@ -868,12 +999,9 @@ def update_video_frame():
 
     except Exception as e:
         camera_label.setText(f" ")
-        # print("Camera stream error:", e)
-
-    QTimer.singleShot(100, update_video_frame)
 
 def mainInterface():
-    global status_label, battery_label, camera_label, main_window, camera_selector
+    global status_label, battery_label, camera_label, main_window, camera_selector, video_timer
 
     class SpotMainWindow(QMainWindow):
         def keyPressEvent(self, event):
@@ -941,18 +1069,20 @@ def mainInterface():
         QComboBox::item:selected { background-color: #2980b9; color: white; }""")
     camera_selector.addItems(fisheye_cameras)
 
+    video_timer = QTimer()
+    video_timer.timeout.connect(update_video_frame)
     next_cam_button = QPushButton("Next Camera")
     next_cam_button.setStyleSheet("background-color: #1abc9c; color: white; font-size: 14px;")
     next_cam_button.setFixedSize(120, 30)
     next_cam_button.clicked.connect(next_camera)
 
     # Start and Stop buttons for video stream
-    start_button = QPushButton("Start")
+    start_button = QPushButton("Start Camera")
     start_button.setStyleSheet("background-color: darkgreen; color: white; font-size: 14px;")
     start_button.setFixedSize(120, 30)
     start_button.clicked.connect(start_video_stream)
 
-    stop_button = QPushButton("Stop")
+    stop_button = QPushButton("Stop Camera")
     stop_button.setStyleSheet("background-color: darkred; color: white; font-size: 14px;")
     stop_button.setFixedSize(120, 30)
     stop_button.clicked.connect(stop_video_stream)
@@ -969,11 +1099,10 @@ def mainInterface():
         global current_camera_index
         current_camera_index = index
         status_label.setText(f"Switched to: {fisheye_cameras[index]}")
-
     camera_selector.currentIndexChanged.connect(camera_changed)
 
     # Camera display
-    camera_label = QLabel("Connecting to camera...")
+    camera_label = QLabel("Take Lease then Press Start Camera to Turn on Camera")
     camera_label.setStyleSheet("background-color: black; color: white; font-size: 16px; padding: 5px; border-radius: 5px;")
     camera_label.setAlignment(Qt.AlignCenter)
     camera_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1059,8 +1188,6 @@ def mainInterface():
     central_widget.resizeEvent = resize_overlay
 
     main_window.show()
-
-    start_video_stream()
 
 def createLoginWindow():
     global login_window

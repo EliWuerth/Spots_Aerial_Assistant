@@ -104,7 +104,8 @@ root = None
 # Global variables
 streaming = False
 current_camera_index = 0
-fisheye_cameras = ["frontleft_fisheye_image","frontright_fisheye_image","left_fisheye_image","right_fisheye_image","back_fisheye_image"]
+#!!!
+fisheye_cameras = [("frontleft_fisheye_image", "Front Left"),("frontright_fisheye_image", "Front Right"),("left_fisheye_image", "Left Side"),("right_fisheye_image", "Right Side"),("back_fisheye_image", "Back")]
 image_client = None  # You must initialize this properly
 
 # from the wasd.py file
@@ -1067,7 +1068,7 @@ def mainInterface():
         QComboBox::indicator { width: 20px; height: 20px; }
         QComboBox::item { background-color: #34495e; color: white; }
         QComboBox::item:selected { background-color: #2980b9; color: white; }""")
-    camera_selector.addItems(fisheye_cameras)
+    camera_selector.addItems([label for _, label in fisheye_cameras]) #!!!
 
     video_timer = QTimer()
     video_timer.timeout.connect(update_video_frame)

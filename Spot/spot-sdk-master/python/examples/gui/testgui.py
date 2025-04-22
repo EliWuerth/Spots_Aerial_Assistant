@@ -1,16 +1,10 @@
-import tkinter as tk
-from tkinter import messagebox
-from PyQt5 import QtWidgets, QtGui, QtCore
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QComboBox, QMessageBox, QStackedLayout, QSizePolicy)
-from PyQt5.QtGui import QPalette, QPixmap, QBrush, QImage, QIcon
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QComboBox, QMessageBox, QSizePolicy, QFormLayout, QDialog, QAction)
+from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt, QTimer
 import sys
 import os
-from PIL import Image, ImageTk, ImageEnhance
-import curses
-import io
+from PIL import Image
 import logging
-import math
 import os
 import signal
 import sys
@@ -18,49 +12,41 @@ import threading
 import time
 import numpy as np
 import cv2
+import hashlib
+import sqlite3
 import bosdyn.client
-from bosdyn.client.image import build_image_request
 from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
 import bosdyn.client.util
 from bosdyn.client.lease import *
-from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder, blocking_stand
+from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.image import ImageClient
-from bosdyn.client.robot import Robot
-from bosdyn.api import geometry_pb2,robot_state_pb2, basic_command_pb2
-from bosdyn.util import seconds_to_duration
-from collections import OrderedDict
-from bosdyn.client import Robot
+from bosdyn.client import ResponseError, RpcError, create_standard_sdk
+from bosdyn.client.lease import Error as LeaseBaseError
+from bosdyn.client.time_sync import TimeSyncError
 from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
 from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
 from bosdyn.client.power import PowerClient
-from bosdyn.client.async_tasks import AsyncTasks, AsyncGRPCTask, AsyncPeriodicQuery
+from bosdyn.client.async_tasks import AsyncPeriodicQuery
+from bosdyn.client.robot_command import RobotCommandBuilder
+from bosdyn.api import basic_command_pb2
 import bosdyn.api.basic_command_pb2 as basic_command_pb2
 import bosdyn.api.power_pb2 as PowerServiceProto
 import bosdyn.api.robot_state_pb2 as robot_state_proto
 import bosdyn.api.spot.robot_command_pb2 as spot_command_pb2
-from bosdyn.client import ResponseError, RpcError, create_standard_sdk
-from bosdyn.client.lease import Error as LeaseBaseError
-from bosdyn.client.time_sync import TimeSyncError
-from bosdyn.util import duration_str, format_metric, secs_to_hms
 import bosdyn.api.power_pb2 as power_pb2
-from bosdyn.client import power
 from bosdyn.api.robot_state_pb2 import PowerState
 from bosdyn.api.image_pb2 import Image as BosdynImageFormat
-from bosdyn.client.robot_command import RobotCommandBuilder
-import bosdyn.geometry
-from bosdyn.api import trajectory_pb2
 from bosdyn.api.spot import robot_command_pb2 as spot_command_pb2
-from bosdyn.client import math_helpers
-from bosdyn.client.robot_command import RobotCommandBuilder
+from bosdyn.util import duration_str
+import bosdyn.geometry
 from bosdyn.geometry import EulerZXY
-from bosdyn.client.robot_command import RobotCommandBuilder
-from bosdyn.client.math_helpers import Quat
-from bosdyn.api import geometry_pb2, trajectory_pb2
-import bosdyn.client.math_helpers as math_helpers
-from google.protobuf.duration_pb2 import Duration
-from google.protobuf.timestamp_pb2 import Timestamp
 
+# Global variables
+streaming = False
+current_camera_index = 0
+fisheye_cameras = [("frontleft_fisheye_image", "Front Left"),("frontright_fisheye_image", "Front Right"),("left_fisheye_image", "Left Side"),("right_fisheye_image", "Right Side"),("back_fisheye_image", "Back")]
+image_client = None  # You must initialize this properly
 current_process = None
 lease_client = None
 lease_keep_alive = None
@@ -68,6 +54,11 @@ robot = None
 command_client = None
 image_client = None
 wasd_interface = None
+camera_label = None
+status_label = None
+battery_label = None
+canvas = None
+root = None
 
 # Define valid credentials and IP for demonstration purposes
 VALID_USERNAME = "user2"
@@ -95,52 +86,7 @@ YAW_MIN = -1.0
 YAW_MAX = 1.0
 YAW_STEP = 0.1
 
-camera_label = None
-status_label = None
-battery_label = None
-canvas = None
-root = None
-
-# Global variables
-streaming = False
-current_camera_index = 0
-#!!!
-fisheye_cameras = [("frontleft_fisheye_image", "Front Left"),("frontright_fisheye_image", "Front Right"),("left_fisheye_image", "Left Side"),("right_fisheye_image", "Right Side"),("back_fisheye_image", "Back")]
-image_client = None  # You must initialize this properly
-
 # from the wasd.py file
-def _image_to_ascii(image, new_width):
-    """Convert an rgb image to an ASCII 'image' that can be displayed in a terminal."""
-    ASCII_CHARS = '@#S%?*+;:,.'
-
-    enhancer = ImageEnhance.Contrast(image)
-    image = enhancer.enhance(0.8)
-
-    # Scaling image before rotation by 90 deg.
-    scaled_rot_height = new_width
-    original_rot_width, original_rot_height = image.size
-    scaled_rot_width = (original_rot_width * scaled_rot_height) // original_rot_height
-    # Scaling rotated width (height, after rotation) by half because ASCII chars
-    #  in terminal seem about 2x as tall as wide.
-    image = image.resize((scaled_rot_width // 2, scaled_rot_height))
-
-    # Rotate image 90 degrees, then convert to grayscale.
-    image = image.transpose(Image.ROTATE_270)
-    image = image.convert('L')
-
-    def _pixel_char(pixel_val):
-        return ASCII_CHARS[pixel_val * len(ASCII_CHARS) // 256]
-
-    img = []
-    row = [' '] * new_width
-    last_col = new_width - 1
-    for idx, pixel_char in enumerate(_pixel_char(val) for val in image.getdata()):
-        idx_row = idx % new_width
-        row[idx_row] = pixel_char
-        if idx_row == last_col:
-            img.append(''.join(row))
-    return img
-
 class ExitCheck(object):
     """A class to help exiting a loop, also capturing SIGTERM to exit the loop."""
     def __init__(self):
@@ -166,17 +112,6 @@ class ExitCheck(object):
         """Return the status of the exit checker indicating if it should exit."""
         return self._kill_now
 
-class CursesHandler(logging.Handler):
-    """logging handler which puts messages into the curses interface"""
-    def __init__(self, wasd_interface):
-        super(CursesHandler, self).__init__()
-        self._wasd_interface = wasd_interface
-
-    def emit(self, record):
-        msg = record.getMessage()
-        msg = msg.replace('\n', ' ').replace('\r', '')
-        self._wasd_interface.add_message(f'{record.levelname:s} {msg:s}')
-
 class AsyncRobotState(AsyncPeriodicQuery):
     """Grab robot state."""
     def __init__(self, robot_state_client):
@@ -184,44 +119,6 @@ class AsyncRobotState(AsyncPeriodicQuery):
 
     def _start_query(self):
         return self._client.get_robot_state_async()
-
-class AsyncImageCapture(AsyncGRPCTask):
-    """Grab camera images from the robot."""
-    def __init__(self, robot):
-        super(AsyncImageCapture, self).__init__()
-        self._image_client = robot.ensure_client(ImageClient.default_service_name)
-        self._ascii_image = None
-        self._video_mode = False
-        self._should_take_image = False
-
-    @property
-    def ascii_image(self):
-        """Return the latest captured image as ascii."""
-        return self._ascii_image
-
-    def toggle_video_mode(self):
-        """Toggle whether doing continuous image capture."""
-        self._video_mode = not self._video_mode
-
-    def take_image(self):
-        """Request a one-shot image."""
-        self._should_take_image = True
-
-    def _start_query(self):
-        self._should_take_image = False
-        source_name = 'frontright_fisheye_image'
-        return self._image_client.get_image_from_sources_async([source_name])
-
-    def _should_query(self, now_sec):  # pylint: disable=unused-argument
-        return self._video_mode or self._should_take_image
-
-    def _handle_result(self, result):
-        import io
-        image = Image.open(io.BytesIO(result[0].shot.image.data))
-        self._ascii_image = _image_to_ascii(image, new_width=70)
-
-    def _handle_error(self, exception):
-        LOGGER.exception('Failure getting image: %s', exception)
 
 class WasdInterface(object):
     """A curses interface for driving the robot."""
@@ -238,13 +135,11 @@ class WasdInterface(object):
         self._robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
         self._robot_command_client = robot.ensure_client(RobotCommandClient.default_service_name)
         self._robot_state_task = AsyncRobotState(self._robot_state_client)
-        self._image_task = AsyncImageCapture(robot)
-        self._async_tasks = AsyncTasks([self._robot_state_task, self._image_task])
         self._lock = threading.Lock()
-        self._body_height = 0.0
-        self._body_pitch = 0.0
-        self._body_roll = 0.0
-        self._body_yaw = 0.0  # NEW: Yaw support
+        self._body_height = 0.0             # NEW: Body height support
+        self._body_pitch = 0.0              # NEW: Pitch support
+        self._body_roll = 0.0               # NEW: Roll support
+        self._body_yaw = 0.0                # NEW: Yaw support
         self._command_dictionary = {
             27: self._stop,  # ESC key
             '\t': self._quit_program,
@@ -262,17 +157,15 @@ class WasdInterface(object):
             'd': self._strafe_right,
             'q': self._turn_left,
             'e': self._turn_right,
-            'i': self._image_task.take_image,
-            'k': self._image_task.toggle_video_mode,
-            'u': self._yaw_right,     # NEW
-            'y': self._yaw_left,      # NEW
-            'n': self._roll_left,
-            'm': self._roll_right,
-            'g': self._tilt_backward,
-            'h': self._tilt_forward,
-            'z': self._increase_body_height,
-            'x': self._decrease_body_height,
-            'c': self._reset_posture   # NEW
+            'u': self._yaw_right,            # NEW
+            'y': self._yaw_left,             # NEW
+            'n': self._roll_left,            # NEW
+            'm': self._roll_right,           # NEW
+            'g': self._tilt_backward,        # NEW
+            'h': self._tilt_forward,         # NEW
+            'z': self._increase_body_height, # NEW
+            'x': self._decrease_body_height, # NEW
+            'c': self._reset_posture         # NEW
         }
         self._locked_messages = ['', '', '']
         self._estop_keepalive = None
@@ -308,11 +201,11 @@ class WasdInterface(object):
 
     def _increase_body_height(self):
         self._body_height = min(BODY_HEIGHT_MAX, self._body_height + BODY_HEIGHT_STEP)
-        self._send_body_height_command()
+        self.send_body_height_command()
 
     def _decrease_body_height(self):
         self._body_height = max(BODY_HEIGHT_MIN, self._body_height - BODY_HEIGHT_STEP)
-        self._send_body_height_command()
+        self.send_body_height_command()
 
     def _reset_posture(self):
         self._body_pitch = 0.0
@@ -321,19 +214,11 @@ class WasdInterface(object):
         self._body_height = 0.0
         self._send_orientation_command()
     
-    def adjust_orientation(self):
-        """Adjust the robot's orientation using the current roll, pitch, yaw values."""
-        # Convert Euler angles (roll, pitch, yaw) to a gravity-aligned body frame.
+    def _send_orientation_command(self):
+        # Send the orientation command to the robot
         footprint_R_body = EulerZXY(yaw=self._body_yaw, roll=self._body_roll, pitch=self._body_pitch)
-        
-        # Build the command to apply this orientation in the body frame.
         command = RobotCommandBuilder.synchro_stand_command(footprint_R_body=footprint_R_body)
-        
-        # Send the command to the robot to adjust its orientation.
-        self._send_robot_command(command)
-        
-        # Optionally, display the updated angles.
-        print(f"Pitch: {self._body_pitch:.2f}, Roll: {self._body_roll:.2f}, Yaw: {self._body_yaw:.2f}, Height: {self._body_height:.2f}")
+        self._start_robot_command('adjust_body_height', command, end_time_secs=time.time() + VELOCITY_CMD_DURATION)
 
     def send_yaw_command(self, yaw_rad):
         roll = 0.0
@@ -356,7 +241,7 @@ class WasdInterface(object):
         command = RobotCommandBuilder.synchro_stand_command(footprint_R_body=footprint_R_body)
         self._start_robot_command('adjust_body_height', command, end_time_secs=time.time() + VELOCITY_CMD_DURATION)
 
-    def _send_body_height_command(self):
+    def send_body_height_command(self):
         command = RobotCommandBuilder.synchro_velocity_command(
             v_x=0.0, v_y=0.0, v_rot=0.0,
             body_height=self._body_height
@@ -404,75 +289,6 @@ class WasdInterface(object):
     def robot_state(self):
         """Get latest robot state proto."""
         return self._robot_state_task.proto
-
-    def drive(self, stdscr):
-        """User interface to control the robot via the passed-in curses screen interface object."""
-        with ExitCheck() as self._exit_check:
-            curses_handler = CursesHandler(self)
-            curses_handler.setLevel(logging.INFO)
-            LOGGER.addHandler(curses_handler)
-
-            stdscr.nodelay(True)  # Don't block for user input.
-            stdscr.resize(26, 140)
-            stdscr.refresh()
-
-            # for debug
-            curses.echo()
-
-            try:
-                while not self._exit_check.kill_now:
-                    self._async_tasks.update()
-                    self._drive_draw(stdscr, self._lease_keepalive)
-
-                    try:
-                        cmd = stdscr.getch()
-                        # Do not queue up commands on client
-                        self.flush_and_estop_buffer(stdscr)
-                        self._drive_cmd(cmd)
-                        time.sleep(COMMAND_INPUT_RATE)
-                    except Exception:
-                        # On robot command fault, sit down safely before killing the program.
-                        self._safe_power_off()
-                        time.sleep(2.0)
-                        raise
-
-            finally:
-                LOGGER.removeHandler(curses_handler)
-
-    def _drive_draw(self, stdscr, lease_keep_alive):
-        """Draw the interface screen at each update."""
-        stdscr.clear()  # clear screen
-        stdscr.resize(26, 140)
-        stdscr.addstr(0, 0, f'{self._robot_id.nickname:20s} {self._robot_id.serial_number}')
-        stdscr.addstr(1, 0, self._lease_str(lease_keep_alive))
-        stdscr.addstr(2, 0, self._battery_str())
-        stdscr.addstr(3, 0, self._estop_str())
-        stdscr.addstr(4, 0, self._power_state_str())
-        stdscr.addstr(5, 0, self._time_sync_str())
-        stdscr.addstr(6, 0, f'Body height: {self._body_height:.2f} m')
-        for i in range(3):
-            stdscr.addstr(7 + i, 2, self.message(i))
-        stdscr.addstr(10, 0, 'Commands: [TAB]: quit                               ')
-        stdscr.addstr(11, 0, '          [T]: Time-sync, [SPACE]: Estop, [P]: Power')
-        stdscr.addstr(12, 0, '          [I]: Take image, [O]: Video mode          ')
-        stdscr.addstr(13, 0, '          [f]: Stand, [r]: Self-right               ')
-        stdscr.addstr(14, 0, '          [v]: Sit, [b]: Battery-change             ')
-        stdscr.addstr(15, 0, '          [wasd]: Directional strafing              ')
-        stdscr.addstr(16, 0, '          [qe]: Turning, [ESC]: Stop                ')
-        stdscr.addstr(17, 0, '          [↑/↓] or [x/z]: Raise/lower body height    ')
-        stdscr.addstr(18, 0, '          [l]: Return/Acquire lease                 ')
-        stdscr.addstr(19, 0, '')
-
-        # print as many lines of the image as will fit on the curses screen
-        if self._image_task.ascii_image is not None:
-            max_y, _max_x = stdscr.getmaxyx()
-            for y_i, img_line in enumerate(self._image_task.ascii_image):
-                if y_i + 17 >= max_y:
-                    break
-
-                stdscr.addstr(y_i + 17, 0, img_line)
-
-        stdscr.refresh()
 
     def _drive_cmd(self, key):
         """Run user commands at each update."""
@@ -524,15 +340,6 @@ class WasdInterface(object):
                 self._estop_keepalive.shutdown()
                 self._estop_keepalive = None
 
-    def _toggle_lease(self):
-        """toggle lease acquisition. Initial state is acquired"""
-        if self._lease_client is not None:
-            if self._lease_keepalive is None:
-                self._lease_keepalive = LeaseKeepAlive(self._lease_client, must_acquire=True, return_at_exit=True)
-            else:
-                self._lease_keepalive.shutdown()
-                self._lease_keepalive = None
-
     def _start_robot_command(self, desc, command_proto, end_time_secs=None):
 
         def _start_command():
@@ -580,29 +387,10 @@ class WasdInterface(object):
     def _velocity_cmd_helper(self, desc='', v_x=0.0, v_y=0.0, v_rot=0.0):
         self._start_robot_command(desc, RobotCommandBuilder.synchro_velocity_command(v_x=v_x, v_y=v_y, v_rot=v_rot), end_time_secs=time.time() + VELOCITY_CMD_DURATION)
 
-    def _stow(self):
-        self._start_robot_command('stow', RobotCommandBuilder.arm_stow_command())
-
-    def _unstow(self):
-        self._start_robot_command('stow', RobotCommandBuilder.arm_ready_command())
-
     def _return_to_origin(self):
         self._start_robot_command(
             'fwd_and_rotate',
             RobotCommandBuilder.synchro_se2_trajectory_point_command(goal_x=0.0, goal_y=0.0, goal_heading=0.0, frame_name=ODOM_FRAME_NAME, params=None, body_height=0.0, locomotion_hint=spot_command_pb2.HINT_SPEED_SELECT_TROT), end_time_secs=time.time() + 20)
-
-    def _take_ascii_image(self):
-        source_name = 'frontright_fisheye_image'
-        image_response = self._image_client.get_image_from_sources([source_name])
-        image = Image.open(io.BytesIO(image_response[0].shot.image.data))
-        ascii_image = self._ascii_converter.convert_to_ascii(image, new_width=70)
-        self._last_image_ascii = ascii_image
-
-    def _toggle_ascii_video(self):
-        if self._video_mode:
-            self._video_mode = False
-        else:
-            self._video_mode = True
 
     def _toggle_power(self):
         power_state = self._power_state()
@@ -684,48 +472,6 @@ class WasdInterface(object):
         except (TimeSyncError, RpcError) as err:
             skew_str = f'({err})'
         return f'Time sync: {status} {skew_str}'
-
-    def _battery_str(self):
-        if not self.robot_state:
-            return ''
-        battery_state = self.robot_state.battery_states[0]
-        status = battery_state.Status.Name(battery_state.status)
-        status = status[7:]  # get rid of STATUS_ prefix
-        if battery_state.charge_percentage.value:
-            bar_len = int(battery_state.charge_percentage.value) // 10
-            bat_bar = f'|{"=" * bar_len}{" " * (10 - bar_len)}|'
-        else:
-            bat_bar = ''
-        time_left = ''
-        if battery_state.estimated_runtime:
-            time_left = f'({secs_to_hms(battery_state.estimated_runtime.seconds)})'
-        return f'Battery: {status}{bat_bar} {time_left}'
-
-def _setup_logging(verbose):
-    """Log to file at debug level, and log to console at INFO or DEBUG (if verbose).
-
-    Returns the stream/console logger so that it can be removed when in curses mode.
-    """
-    LOGGER.setLevel(logging.DEBUG)
-    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-    # Save log messages to file wasd.log for later debugging.
-    file_handler = logging.FileHandler('wasd.log')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(log_formatter)
-    LOGGER.addHandler(file_handler)
-
-    # The stream handler is useful before and after the application is in curses-mode.
-    if verbose:
-        stream_level = logging.DEBUG
-    else:
-        stream_level = logging.INFO
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(stream_level)
-    stream_handler.setFormatter(log_formatter)
-    LOGGER.addHandler(stream_handler)
-    return stream_handler
 
 def check_battery_status(widget):
     global battery_label, VALID_IP, robot
@@ -898,7 +644,6 @@ def run_with_inputs(username_input, password_input, ip_input, login_window, erro
     password = password_input.text()
     ip = ip_input.text()
 
-
     if not username or not password or not ip:
         QMessageBox.critical(None, "Error", "All fields are required!")
         return
@@ -1068,7 +813,7 @@ def mainInterface():
         QComboBox::indicator { width: 20px; height: 20px; }
         QComboBox::item { background-color: #34495e; color: white; }
         QComboBox::item:selected { background-color: #2980b9; color: white; }""")
-    camera_selector.addItems([label for _, label in fisheye_cameras]) #!!!
+    camera_selector.addItems([label for _, label in fisheye_cameras])
 
     video_timer = QTimer()
     video_timer.timeout.connect(update_video_frame)
@@ -1190,43 +935,347 @@ def mainInterface():
 
     main_window.show()
 
-def createLoginWindow():
-    global login_window
-    login_window = QWidget()
-    login_window.setWindowTitle("Spot Login")
-    login_window.setGeometry(200, 200, 400, 300)
+class RobotControlApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.create_menu()
 
-    layout = QVBoxLayout()
+        # login_window = QWidget()
+        self.setWindowTitle("Spot Login")
+        self.setGeometry(200, 200, 400, 300)
 
-    error_label = QLabel("")  # Label for error messages
-    layout.addWidget(error_label)
+        login_form = QFormLayout()
 
-    username_input = QLineEdit()
-    password_input = QLineEdit()
-    ip_input = QLineEdit()
+        username_input = QLineEdit()
+        password_input = QLineEdit()
+        ip_input = QLineEdit()
 
-    password_input.setEchoMode(QLineEdit.Password)
+        password_input.setEchoMode(QLineEdit.Password)
 
-    login_button = QPushButton("Login")
-    login_button.clicked.connect(lambda: run_with_inputs(username_input, password_input, ip_input, login_window, error_label))
-    
-    # --- Spacer ---
-    spacer = QLabel("")
-    spacer.setFixedHeight(10)
+        self.login_button = QPushButton("Login")
+        self.login_button.setStyleSheet("background-color: black; color: white; font-size: 14px;")
+        self.login_button.clicked.connect(lambda: run_with_inputs(username_input, password_input, ip_input, self, error_label))
 
-    layout.addWidget(QLabel("Username:"))
-    layout.addWidget(username_input)
-    layout.addWidget(QLabel("Password:"))
-    layout.addWidget(password_input)
-    layout.addWidget(QLabel("IP Address:"))
-    layout.addWidget(ip_input)
-    layout.addWidget(spacer)
-    layout.addWidget(login_button)
+        # --- Spacer ---
+        spacer = QLabel("")
+        spacer.setFixedHeight(10)
 
-    login_window.setLayout(layout)
-    login_window.show()
+        user_label = QLabel("Username:")
+        user_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        username_input.setPlaceholderText("Enter username")
+        username_input.setToolTip("Username must be unique")
+        username_input.setMaxLength(20)
+        username_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+        
+        password_label = QLabel("Password:")
+        password_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        password_input.setPlaceholderText("Enter password")
+        password_input.setToolTip("Password must be at least 6 characters long")
+        password_input.setMaxLength(20)
+        password_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+
+        ip_label = QLabel("IP Address:")
+        ip_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        ip_input.setPlaceholderText("Enter IP Address")
+        ip_input.setToolTip("Enter the IP address of the robot")
+        ip_input.setMaxLength(15)
+        ip_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+
+        login_form.addRow(user_label, username_input)
+        login_form.addRow(password_label, password_input)
+        login_form.addRow(ip_label,ip_input)
+        login_form.addRow(spacer)
+        login_form.addWidget(self.login_button)
+
+        form_widget = QWidget()
+        form_widget.setLayout(login_form)
+        form_widget.setStyleSheet("background-color: white; border-radius: 10px; padding: 20px;")
+
+        center_layout = QHBoxLayout()
+        center_layout.addStretch(1)  # Add flexible space before the form
+        center_layout.addWidget(form_widget)
+        center_layout.addStretch(1)  # Add flexible space after the form
+        center_layout.setAlignment(Qt.AlignCenter)  # Center the layout
+
+        # --- Main Layout ---
+        layout = QVBoxLayout()
+        error_label = QLabel("")  # Label for error messages
+        error_label.setFixedHeight(10)
+        layout.addWidget(error_label)
+        layout.addLayout(center_layout)  # Add the centered layout to the main layout
+
+        # Set central widget
+        container = QWidget()
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+        bg_label = ResizableBackground("./Gold-Brayer.png")
+        bg_label.setParent(container)
+        bg_label.setGeometry(container.rect())
+        bg_label.lower()  # Ensure it's behind the overlay
+
+        # Initialize database
+        self.init_db()
+
+        # Show login dialog
+        self.show_login_dialog()
+
+    def create_menu(self):
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("File")
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+    def show_login_dialog(self):
+        dialog = LoginDialog(self)
+        # Make sure we block until the dialog is finished, using exec_() correctly
+        result = dialog.exec_()
+        if result == QDialog.Accepted:
+            self.statusBar().showMessage("User Login successful")
+            # mainInterface()  # Show the main window
+        else:
+            QApplication.quit()
+
+    def init_db(self):
+        # Initialize the SQLite database
+        self.conn = sqlite3.connect('users.db')
+        self.cursor = self.conn.cursor()
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT NOT NULL)''')
+        self.conn.commit()
+
+    def register_user(self, username, password):
+        if self.user_exists(username):
+            QMessageBox.warning(self, "Registration Error", "User  already exists.")
+            return False
+        hashed_password = self.hash_password(password)
+        self.cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, hashed_password))
+        self.conn.commit()
+        QMessageBox.information(self, "Registration", "User  registered successfully.")
+        return True
+
+    def login_user(self, username, password):
+        hashed_password = self.hash_password(password)
+        self.cursor.execute('SELECT * FROM users WHERE username = ? AND password = ?', (username, hashed_password))
+        return self.cursor.fetchone() is not None
+
+    def user_exists(self, username):
+        self.cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+        return self.cursor.fetchone() is not None
+
+    def hash_password(self, password):
+        return hashlib.sha256(password.encode()).hexdigest()
+
+    def closeEvent(self, event):
+        # Ensure everything is cleaned up before the app closes
+        self.conn.close()  # Close the database connection
+        event.accept()  # Accept the event and close the application
+
+class ResizableBackground(QLabel):
+    def __init__(self, image_path):
+        super().__init__()
+        self.image_path = image_path
+        self.setAlignment(Qt.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def resizeEvent(self, event):
+        pixmap = QPixmap(self.image_path)
+        if not pixmap.isNull():
+            self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+
+class RegisterDialog(QDialog):
+    def __init__(self, login_dialog):
+        super().__init__(login_dialog.parent())
+        self.login_dialog = login_dialog
+        self.setWindowTitle("Login")
+        self.setGeometry(100, 100, 400, 300)
+
+        # --- Background Image ---
+        bg_label = ResizableBackground("./Gold-Brayer.png")
+        bg_label.setParent(self)
+        bg_label.lower()  # Ensure it's behind all the other widgets
+
+        # --- Form Layout ---
+        login_form = QFormLayout()
+
+        self.username_input = QLineEdit(self)
+        self.password_input = QLineEdit(self)
+        self.password_input.setEchoMode(QLineEdit.Password)
+
+        user_label = QLabel("Username:")
+        user_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        self.username_input.setPlaceholderText("Enter username")
+        self.username_input.setToolTip("Username must be unique")
+        self.username_input.setMaxLength(20)
+        self.username_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+        
+        password_label = QLabel("Password:")
+        password_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        self.password_input.setPlaceholderText("Enter password")
+        self.password_input.setToolTip("Password must be at least 6 characters long")
+        self.password_input.setMaxLength(20)
+        self.password_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+
+        login_form.addRow(user_label, self.username_input)
+        login_form.addRow(password_label, self.password_input)
+
+        # --- Spacer ---
+        spacer = QLabel("")
+        spacer.setFixedHeight(10)
+        login_form.addRow(spacer)
+
+        # --- Buttons ---
+        self.register_button = QPushButton("Register", self)
+        self.register_button.setStyleSheet("background-color: black; color: white; font-size: 14px;")
+        self.register_button.clicked.connect(self.register)
+        login_form.addRow(self.register_button)
+
+        self.back_button = QPushButton("Go Back", self)
+        self.back_button.setStyleSheet("background-color: grey; color: white; font-size: 14px;")
+        self.back_button.clicked.connect(self.go_back)
+        login_form.addRow(self.back_button)
+
+        # --- Form Widget ---
+        form_widget = QWidget()
+        form_widget.setLayout(login_form)
+        form_widget.setStyleSheet("background-color: white; border-radius: 10px; padding: 20px;")
+
+        # --- Centering the Form ---
+        center_layout = QHBoxLayout()
+        center_layout.addStretch(1)  # Add flexible space before the form
+        center_layout.addWidget(form_widget)
+        center_layout.addStretch(1)  # Add flexible space after the form
+        center_layout.setAlignment(Qt.AlignCenter)  # Center the layout
+
+        # --- Main Layout ---
+        layout = QVBoxLayout()
+        error_label = QLabel("")  # Label for error messages
+        error_label.setFixedHeight(10)
+        layout.addWidget(error_label)
+        layout.addLayout(center_layout)  # Add the centered layout to the main layout
+
+        self.setLayout(layout)  # Set the main layout to the dialog
+
+    def register(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+
+        if not username or not password:
+            QMessageBox.warning(self, "Input Error", "Please enter both username and password.")
+            return
+
+        if len(password) < 6:
+            QMessageBox.warning(self, "Password Error", "Password must be at least 6 characters long.")
+            return
+
+        if self.parent().register_user(username, password):
+            QMessageBox.information(self, "Success", "Account created successfully.")
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", "User already exists.")
+
+    def go_back(self):
+        self.close()  # Close the Register dialog
+        self.login_dialog.show()
+
+    def closeEvent(self, event):
+        # You can add any additional cleanup here if needed
+        super().closeEvent(event)
+
+class LoginDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Login")
+        self.setGeometry(100, 100, 400, 300)
+
+        # --- Background Image ---
+        bg_label = ResizableBackground("./Gold-Brayer.png")
+        bg_label.setParent(self)
+        bg_label.lower()  # Ensure it's behind all the other widgets
+
+        # --- Form Layout ---
+        login_form = QFormLayout()
+
+        self.username_input = QLineEdit(self)
+        self.password_input = QLineEdit(self)
+        self.password_input.setEchoMode(QLineEdit.Password)
+
+        user_label = QLabel("Username:")
+        user_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        self.username_input.setPlaceholderText("Enter username")
+        self.username_input.setToolTip("Username must be unique")
+        self.username_input.setMaxLength(20)
+        self.username_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+        
+        password_label = QLabel("Password:")
+        password_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        self.password_input.setPlaceholderText("Enter password")
+        self.password_input.setToolTip("Password must be at least 6 characters long")
+        self.password_input.setMaxLength(20)
+        self.password_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+
+        login_form.addRow(user_label, self.username_input)
+        login_form.addRow(password_label, self.password_input)
+
+        # --- Spacer ---
+        spacer = QLabel("")
+        spacer.setFixedHeight(10)
+        login_form.addRow(spacer)
+
+        # --- Buttons ---
+        self.login_button = QPushButton("Login", self)
+        self.login_button.setStyleSheet("background-color: black; color: white; font-size: 14px;")
+        self.login_button.clicked.connect(self.login)
+        login_form.addRow(self.login_button)
+
+        self.register_button = QPushButton("Register", self)
+        self.register_button.setStyleSheet("background-color: light-gray; color: white; font-size: 14px;")
+        self.register_button.clicked.connect(self.register)
+        login_form.addRow(self.register_button)
+
+        # --- Form Widget ---
+        form_widget = QWidget()
+        form_widget.setLayout(login_form)
+        form_widget.setStyleSheet("background-color: white; border-radius: 10px; padding: 20px;")
+
+        # --- Centering the Form ---
+        center_layout = QHBoxLayout()
+        center_layout.addStretch(1)  # Add flexible space before the form
+        center_layout.addWidget(form_widget)
+        center_layout.addStretch(1)  # Add flexible space after the form
+        center_layout.setAlignment(Qt.AlignCenter)  # Center the layout
+
+        # --- Main Layout ---
+        layout = QVBoxLayout()
+        error_label = QLabel("")  # Label for error messages
+        error_label.setFixedHeight(10)
+        layout.addWidget(error_label)
+        layout.addLayout(center_layout)  # Add the centered layout to the main layout
+
+        self.setLayout(layout)  # Set the main layout to the dialog
+
+    def login(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        if self.parent().login_user(username, password):
+            self.accept()
+        else:
+            # QMessageBox.warning(self, "Login Error", "Invalid username or password.")
+            self.error_label.setText("Invalid credentials")
+            self.error_label.setStyleSheet("color: red; font-style: bold;")
+
+    def register(self):
+        self.hide()
+        dialog = RegisterDialog(self)
+        dialog.exec_()
+        self.show()
+
+    def closeEvent(self, event):
+        # You can add any additional cleanup here if needed
+        super().closeEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    createLoginWindow()
+    main_window = RobotControlApp()
+    main_window.show()
     sys.exit(app.exec_())

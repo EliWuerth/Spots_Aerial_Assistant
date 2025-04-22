@@ -954,7 +954,7 @@ def update_video_frame():
         return
 
     try:
-        camera_name = fisheye_cameras[current_camera_index]
+        camera_name = fisheye_cameras[current_camera_index][0]
         response = image_client.get_image_from_sources([camera_name])[0]
         img_data = response.shot.image.data
         width = response.shot.image.cols

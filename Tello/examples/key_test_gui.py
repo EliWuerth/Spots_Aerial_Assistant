@@ -10,6 +10,7 @@ from djitellopy import Tello
 import time
 import math
 from collections import deque
+import matplotlib.pyplot as plt
 
 # ArUco tracking setup
 drone = Tello()
@@ -33,6 +34,7 @@ last_aruco_info = [0, 0]
 last_aruco_area = 0
 last_aruco_image = None
 some_log = []
+hazards = []
 
 # Constants
 SPEED = 60
@@ -216,7 +218,7 @@ def go_to_aruco_and_land():
                 yaw_velocity, pError = track_aruco(aruco_info, frame.shape[1], PID, pError)
                 
                 # Forward control
-                forward_speed = int(SPEED * (1 - min(area / (LANDING_THRESHOLD * 1.5), 1)))
+                forward_speed = max(5 ,int(SPEED * (1 - min(area / (LANDING_THRESHOLD * 1.5), 1))))
                 
                 # Vertical adjustment based on vertical position
                 vertical_speed = int(PID[0] * error_y)
@@ -348,7 +350,7 @@ class PositionTracker:
         self.yaw = 0
         self.last_update_time = time.time()
 
-    def update_position(self, forward_cm=0, right_cm=0, up_cm=0, yaw_change_deg=0):
+    def update_position(self, right_cm=0, forward_cm=0, up_cm=0, yaw_change_deg=0):
         """
         Update position estimate based on commanded movements.
         """
@@ -373,7 +375,7 @@ class PositionTracker:
 tracker = PositionTracker()
 
 class PIDController:
-    def __init__(self, p=0.1, i=0.0, d=0.0):
+    def __init__(self, p=0.3, i=0.0005, d=0.1):
         self.kp = p
         self.ki = i
         self.kd = d
@@ -401,74 +403,122 @@ class PIDController:
 
         self.previous_error = error
         return output
-my_pid_controller = PIDController(p=0.1, i=0.0, d=0.0)
+my_pid_controller = PIDController(p=0.3, i=0.0005, d=0.1)
 
 def dynamic_pid_tuning(p_gain, i_gain, d_gain):
     my_pid_controller.update(p_gain=p_gain, i_gain=i_gain, d_gain=d_gain)
     print(f"PID updated: P={p_gain}, I={i_gain}, D={d_gain}")
 
-def circle_around_target(radius_cm=100, speed=30):
+def circle_around_target(radius_cm=100, yaw_rate_deg_s=20):
     print("Starting circle around target...")
-    # Simple circle — fake by stepping yaw while moving forward a bit
-    for _ in range(36):  # 10 degrees each time, full 360
-        drone.move_forward(int((2 * math.pi * radius_cm) / 36))
-        drone.rotate_clockwise(10)
-        tracker.update_position(forward_cm=(2 * math.pi * radius_cm) / 36, yaw_change_deg=10)
+
+    # Calculate the circumference of the circle
+    circumference = 2 * math.pi * radius_cm  # in cm
+
+    # How long should it take to complete the circle?
+    circle_time = circumference / SPEED  # in seconds
+
+    # How much yaw to apply to complete 360° in that time
+    yaw_speed = int(360 / circle_time)  # degrees per second
+
+    start_time = time.time()
+
+    while time.time() - start_time < circle_time:
+        drone.send_rc_control(0, SPEED, 0, yaw_speed)  # forward + yaw
+        time.sleep(0.05)  # 20Hz control loop
+
+    drone.send_rc_control(0, 0, 0, 0)  # Stop
+    print("Finished circling.")
 
 def return_to_start():
     print("Returning to starting point...")
     current_x, current_y, current_z, current_yaw = tracker.get_position()
-    drone.move_back(int(current_x))
+
+    # Define a helper to only move if distance is significant
+    def safe_move(func, distance):
+        if abs(distance) >= 20:  # Tello requires minimum ~20cm move
+            func
+
+    safe_move(drone.move_back(current_x), current_x)
     tracker.update_position(forward_cm=-current_x)
-    drone.move_left(int(current_y))
+
+    safe_move(drone.move_left(current_y), current_y)
     tracker.update_position(right_cm=-current_y)
-    drone.move_down(int(current_z))
+
+    safe_move(drone.move_down(current_z), current_z)
     tracker.update_position(up_cm=-current_z)
 
 def auto_hover():
     print("Auto hover engaged.")
     drone.send_rc_control(0, 0, 0, 0)
 
-def smooth_follow(setpoint_x=0, setpoint_y=0):
-    """
-    Imagine you have face detection or marker tracking.
-    setpoint_x, setpoint_y: desired center (e.g., frame center 0,0)
-    """
-    current_x = get_face_offset_x()  # Write this for your camera detection
-    current_y = get_face_offset_y()
-
-    x_output = my_pid_controller.compute(setpoint_x, current_x)
-    y_output = my_pid_controller.compute(setpoint_y, current_y)
-
-    # Clamp output to max/min drone speeds
-    x_output = int(max(min(x_output, 100), -100))
-    y_output = int(max(min(y_output, 100), -100))
-
-    drone.send_rc_control(x_output, 0, y_output, 0)
-    tracker.update_position()
-
-def grid_search_mode(area_width_cm=300, area_height_cm=300, lane_spacing_cm=50):
-    print("Starting grid search...")
-    rows = int(area_height_cm / lane_spacing_cm)
-    for row in range(rows):
-        # Move across
-        if row % 2 == 0:
-            drone.move_right(area_width_cm)
-            tracker.update_position(right_cm=area_width_cm)
-        else:
-            drone.move_left(area_width_cm)
-            tracker.update_position(right_cm=-area_width_cm)
-        # Move forward between lanes
-        if row != rows - 1:
-            drone.move_forward(lane_spacing_cm)
-            tracker.update_position(forward_cm=lane_spacing_cm)
-
-def hazard_detected():
+def hazard_detected(x, y, z, yaw):
     x, y, z, yaw = tracker.get_position()
     print(f"Hazard logged at (x={x}cm, y={y}cm, z={z}cm, yaw={yaw}°)")
+    
     # Optionally save to file or cloud
     with open("hazard_log.txt", "a") as f:
         f.write(f"Hazard at (x={x}cm, y={y}cm, z={z}cm, yaw={yaw}°)\n")
+    hazards.append((x, y))
+
+def grid_search_mode_rc(area_width_cm=300, area_height_cm=300, lane_spacing_cm=50):
+    print("Starting grid search with RC...")
+    time_per_lane = area_width_cm / SPEED
+    rows = int(area_height_cm / lane_spacing_cm)
+    
+    for row in range(rows):
+        # Move across
+        if row % 2 == 0:
+            print(f"Row {row + 1}: Moving right {area_width_cm} cm")
+            drone.send_rc_control(SPEED, 0, 0, 0)
+            tracker.update_position(SPEED)
+        else:
+            print(f"Row {row + 1}: Moving left {area_width_cm} cm")
+            drone.send_rc_control(-SPEED, 0, 0, 0)
+            tracker.update_position(-SPEED)
+        
+        # Continuously check for hazards during the movement
+        x,y,z,yaw=tracker.get_position()  # Get position while moving
+        if is_proximity_hazard(z):  # Check if the drone is too close to an obstacle
+            hazard_detected(x, y, z, yaw)  # Log hazard if detected
+
+        # Optionally capture the camera feed and check for obstacles visually
+        camera_frame = drone.get_frame_read().frame  # Assuming this gives the camera feed
+        if is_proximity_hazard(z, camera_frame):  # Check visually for obstacles
+            hazard_detected(x, y, z, yaw)  # Log hazard if detected
+
+        time.sleep(time_per_lane)
+        drone.send_rc_control(0, 0, 0, 0)  # Stop movement
+
+        # Move forward between lanes
+        if row != rows - 1:
+            print(f"Row {row + 1}: Moving forward {lane_spacing_cm} cm")
+            drone.send_rc_control(0, SPEED, 0, 0)
+            tracker.update_position(SPEED)
+            time.sleep(lane_spacing_cm / SPEED)
+            drone.send_rc_control(0, 0, 0, 0)  # Stop movement
+
+    # After the grid search is completed, plot the hazards
+    plot_hazards()
+
+def is_proximity_hazard(z, camera_frame=None):
+    # Hazard detection based on altitude (z < 50 cm) as an example
+    if z < 50:  # Threshold for proximity (e.g., too low to the ground)
+        return True
+    
+    # Optionally add camera-based obstacle detection (e.g., using computer vision)
+    if camera_frame is not None:
+        # Process the frame to check for obstacles
+        # Example: simple check for a bright object as an obstacle (not a robust solution)
+        gray_frame = cv2.cvtColor(camera_frame, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray_frame, 200, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # If any contours are detected, we assume there's an obstacle
+        if len(contours) > 0:
+            return True
+    
+    return False
 
 def get_distance_to_target(marker_size_cm=20):
     """
@@ -483,26 +533,20 @@ def get_distance_to_target(marker_size_cm=20):
     distance_cm = (marker_size_cm * focal_length) / perceived_width_pixels
     return distance_cm
 
-def grid_search_mode_rc(area_width_cm=300, area_height_cm=300, lane_spacing_cm=50, speed=30):
-    print("Starting grid search with RC...")
-    time_per_lane = area_width_cm / speed
-    rows = int(area_height_cm / lane_spacing_cm)
-    for row in range(rows):
-        # Move across
-        if row % 2 == 0:
-            drone.send_rc_control(speed, 0, 0, 0)
-            tracker.update_position()
-        else:
-            drone.send_rc_control(-speed, 0, 0, 0)
-            tracker.update_position()
-        time.sleep(time_per_lane)
-        drone.send_rc_control(0, 0, 0, 0)
-        # Move forward between lanes
-        if row != rows - 1:
-            drone.send_rc_control(0, speed, 0, 0)
-            tracker.update_position()
-            time.sleep(lane_spacing_cm / speed)
-            drone.send_rc_control(0, 0, 0, 0)
+def plot_hazards():
+    if hazards:
+        x_vals, y_vals = zip(*hazards)  # Unzip list of (x, y) coordinates
+        plt.figure(figsize=(8, 6))
+        plt.scatter(x_vals, y_vals, color='red', marker='x')
+        plt.title("Hazard Locations")
+        plt.xlabel("X (cm)")
+        plt.ylabel("Y (cm)")
+        
+        # Save the plot to a file
+        plt.savefig('hazards_map.png')  # Save as a PNG file
+        plt.close()  # Close the plot to avoid window popping up
+    else:
+        print("No hazards to plot.")
 
 class SmoothFilter:
     def __init__(self, window_size=5):
@@ -514,21 +558,41 @@ class SmoothFilter:
 smooth_x = SmoothFilter()
 smooth_y = SmoothFilter()
 
-def smooth_follow_with_filter(setpoint_x=0, setpoint_y=0):
-    current_x = get_face_offset_x()
-    current_y = get_face_offset_y()
+def detect_face_offset(frame):
+    """Detect face and return x and y offset from center."""
+    (face_center, _) = find_human(frame)  # Unpack correctly
 
-    filtered_x = smooth_x.update(current_x)
-    filtered_y = smooth_y.update(current_y)
+    frame_center_x = frame.shape[1] // 2
+    frame_center_y = frame.shape[0] // 2
+    face_center_x, face_center_y = face_center
 
-    x_output = my_pid_controller.compute(setpoint_x, filtered_x)
-    y_output = my_pid_controller.compute(setpoint_y, filtered_y)
+    offset_x = face_center_x - frame_center_x
+    offset_y = frame_center_y - face_center_y  # Positive = up
+
+    return offset_x, offset_y, frame
+
+def smooth_follow(setpoint_x=0, setpoint_y=0):
+    pid_x = PIDController(p=0.3, i=0.0005, d=0.1)
+    pid_y = PIDController(p=0.3, i=0.0005, d=0.1)
+
+    frame = drone.get_frame_read().frame  # Get the latest frame
+
+    if frame is None:
+        print("[WARN] No frame received.")
+        return
+
+    offset_x, offset_y, _ = detect_face_offset(frame)
+
+    filtered_x = smooth_x.update(offset_x)
+    filtered_y = smooth_y.update(offset_y)
+
+    x_output = pid_x.compute(setpoint_x, filtered_x)
+    y_output = pid_y.compute(setpoint_y, filtered_y)
 
     drone.send_rc_control(int(x_output), 0, int(y_output), 0)
 
 # Assume you already have a working drone video feed frame
 def get_face_offset_x(frame):
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
@@ -545,7 +609,6 @@ def get_face_offset_x(frame):
     return offset_x  # Positive = right, Negative = left
 
 def get_face_offset_y(frame):
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
@@ -587,7 +650,7 @@ class TelloGUI(QMainWindow):
     def __init__(self):
         super().__init__() # Initialize the parent class
         self.setWindowTitle("Drone Controller")
-        self.setGeometry(500, 250, 850, 650)
+        self.setGeometry(500, 250, 950, 700)
 
         # Set focus policy for keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
@@ -627,7 +690,7 @@ class TelloGUI(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        main_layout = QVBoxLayout()  # Create a vertical layout for the main window
+        main_layout = QHBoxLayout()  # Create a vertical layout for the main window
         central_widget.setLayout(main_layout)
         main_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
@@ -642,26 +705,23 @@ class TelloGUI(QMainWindow):
 
         # --- Video and Temperature ---
         battery = self.update_battery
-        self.battery_label = QLabel(f"{battery}")
-        self.battery_label.setAlignment(Qt.AlignCenter)
-        self.battery_label.setStyleSheet("font-size: 16px; color: white; font-weight: bold;")
-        
+        self.battery_label = QLabel(f'{battery}')
         temp = self.update_temp
-        self.temp_label = QLabel(f"{temp}°C")
-        self.temp_label.setAlignment(Qt.AlignCenter)
+        self.temp_label = QLabel(f'{temp}')
 
-        self.temp_label.setStyleSheet("font-size: 16px; color: white; font-weight: bold;")
+        for label in [self.battery_label, self.temp_label]:
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            label.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+            top_bar_layout.addWidget(label)
 
         # Create a button for the gear icon
         self.gear_button = QPushButton() # NEW
-        self.gear_button.setIcon(QIcon("gear.png"))# NEW
+        self.gear_button.setIcon(QIcon("./Images/gear.png"))# NEW
         self.gear_button.setIconSize(QSize(32, 32))# NEW
         self.gear_button.setFixedSize(40, 40)# NEW
         self.gear_button.setStyleSheet("background-color: transparent; border: none;")# NEW
         self.gear_button.clicked.connect(self.animate_side_menu)# NEW
 
-        top_bar_layout.addWidget(self.battery_label) # NEW
-        top_bar_layout.addWidget(self.temp_label) # NEW
         top_bar_layout.addWidget(self.gear_button)
         top_section.setLayout(top_bar_layout)
 
@@ -743,7 +803,7 @@ class TelloGUI(QMainWindow):
             ("Return to Start", return_to_start, "#16a085"),
             ("Auto Hover", auto_hover, "#2980b9"),
             ("Smooth Follow", smooth_follow, "#c0392b"),
-            ("Grid Search Mode", grid_search_mode, "#27ae60"),
+            ("Grid Search Mode", grid_search_mode_rc, "#27ae60"),
             ("Hazard Detected", hazard_detected, "#e84393"),
         ]
 
@@ -752,6 +812,7 @@ class TelloGUI(QMainWindow):
             button.clicked.connect(function)
             button.setStyleSheet(f"font-size: 16px; font-weight: bold; color: white; background-color: {color};")
             button.setFixedSize(180, 40)
+            button.clicked.connect(lambda _, f=function: threading.Thread(target=f, daemon=True).start())
             new_features_layout.addWidget(button)
 
         self.new_features_widget.setLayout(new_features_layout)
@@ -778,6 +839,31 @@ class TelloGUI(QMainWindow):
         self.i_slider = self.create_pid_slider("I Gain", self.side_menu_layout)
         self.d_slider = self.create_pid_slider("D Gain", self.side_menu_layout)
 
+        # --- Speed Control Title ---
+        self.speed_title_label = QLabel("Drone Speed")
+        self.speed_title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: black;")
+        self.side_menu_layout.addWidget(self.speed_title_label)
+
+        # Layout for speed slider and value label
+        speed_layout = QHBoxLayout()
+
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(10, 100)
+        self.speed_slider.setValue(60)
+        self.speed_slider.setTickInterval(5)
+        self.speed_slider.setTickPosition(QSlider.TicksBelow)
+        self.speed_slider.valueChanged.connect(self.update_speed)
+        self.speed_slider.setStyleSheet("height: 20px;")
+
+        self.speed_value_label = QLabel(f"{self.speed_slider.value()}")  # New label showing current value
+        self.speed_value_label.setFixedWidth(40)  # Small width
+        self.speed_value_label.setStyleSheet("font-size: 14px; font-weight: bold; color: black;")
+
+        speed_layout.addWidget(self.speed_slider)
+        speed_layout.addWidget(self.speed_value_label)
+
+        self.side_menu_layout.addLayout(speed_layout)
+
         # NEW: Advanced Drone Mode Checkbox
         self.advanced_mode_checkbox = QCheckBox("Advanced Drone Mode")
         self.advanced_mode_checkbox.setStyleSheet("font-size: 14px; font-weight: bold; color: black;")
@@ -798,9 +884,11 @@ class TelloGUI(QMainWindow):
         container.setLayout(main_layout)  # Set the main layout for the container
         self.setCentralWidget(container)  # Set the container as the central widget
     
-    def update_pid_values(self):
-        p_gain = self.pid_p_slider.value() / 100.0  # Scale slider 0–10.0
-        dynamic_pid_tuning(p_gain, i_gain=0.5, d_gain=0.1)  # You can have more sliders if needed
+    def update_speed(self):
+        global SPEED
+        SPEED = self.speed_slider.value()
+        self.speed_value_label.setText(str(SPEED))  # Update the label live
+        print(f"Speed updated to {SPEED}")
 
     def show_landed_message():
         # Create a message box to inform the user about the landing status
@@ -845,38 +933,41 @@ class TelloGUI(QMainWindow):
             battery = drone.get_battery()
             self.battery_label.setText(f"Battery: {battery}%")
             if battery < 20:
-                self.battery_label.setStyleSheet("color: red;")  # Change color to red if battery is low
+                self.battery_label.setStyleSheet("color: red; font-size: 20px; font-weight: bold;")  # Change color to red if battery is low
             else:
-                self.battery_label.setStyleSheet("color: white;")  # Reset color to white if battery is okay
+                self.battery_label.setStyleSheet("color: black; font-size: 20px; font-weight: bold;")  # Reset color to white if battery is okay
         except Exception as e:
             print(f"Error getting battery status: {e}")
+            self.battery_label.setText("Battery: N/A")  # Set to N/A if error occurs
+            self.battery_label.setStyleSheet("color: black; font-size: 20px; font-weight: bold;")  # Reset color to white if battery is okay
             drone.end()
             cv2.destroyAllWindows()
-            self.battery_label.setText("Battery: N/A")  # Set to N/A if error occurs
-            self.battery_label.setStyleSheet("color: white;")  # Reset color to white if battery is okay
 
     def update_temp(self):
         # Update the temperature status label
         try:
             temp = drone.get_temperature()
             self.temp_label.setText(f"Temperature: {temp}°C")
-            if temp > 85:
-                self.temp_label.setStyleSheet("color: red;")  # Change color to red if temperature is high
+            if temp >= 100:
+                self.temp_label.setStyleSheet("color: red; font-size: 20px; font-weight: bold;")  # Change color to red if temperature is really high
+            elif temp >= 90 and temp < 100:
+                self.temp_label.setStyleSheet("color: orange; font-size: 20px; font-weight: bold;") # Change color to orange if temperature is high
+            elif temp >= 80 and temp < 90:
+                self.temp_label.setStyleSheet("color: yellow; font-size: 20px; font-weight: bold;") # Change color to red if temperature is slightly high
             else:
-                self.temp_label.setStyleSheet("color: white;")  # Reset color to white if temperature is okay
+                self.temp_label.setStyleSheet("color: black; font-size: 20px; font-weight: bold;")
         except Exception as e:
             print(f"Error getting temperature status: {e}")
+            self.temp_label.setText("Temperature: N/A")  # Set to N/A if error occurs
+            self.temp_label.setStyleSheet("color: black; font-size: 20px; font-weight: bold;")  # Reset color to white if temperature is okay
             drone.end()
             cv2.destroyAllWindows()
-            self.temp_label.setText("Temperature: N/A")  # Set to N/A if error occurs
-            self.temp_label.setStyleSheet("color: white;")  # Reset color to white if temperature is okay
 
     def takeoff(self):
         # Command the drone to take off
         try:
             drone.takeoff()
-            tracker.update_position()
-            # time.sleep(5)  # Optional: Wait for takeoff to stabilize
+            tracker.update_position(0,0,0,0)
         except Exception as e:
             print(f"Error during takeoff: {e}") # Log any errors encountered during takeoff
 
@@ -884,7 +975,6 @@ class TelloGUI(QMainWindow):
         # Command the drone to land
         try:
             drone.land() # Show a message indicating successful landing
-            tracker.update_position()
         except Exception as e:
             print(f"Error during landing: {e}") # Log any errors encountered during landing
 
@@ -920,44 +1010,32 @@ class TelloGUI(QMainWindow):
     def keyPressEvent(self, event):
         # Handle key press events for manual control
         key = event.key()  # Get the pressed key
-        
+
         # Control drone movement based on key presses
         if key == Qt.Key_Escape:
             self.close()
         elif key == Qt.Key_W:
-            drone.send_rc_control(0, 30, 0, 0)  # Forward
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(fb=30)  # Forward
         elif key == Qt.Key_S:
-            drone.send_rc_control(0, -30, 0, 0)  # Backward
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(fb=-30)  # Backward
         elif key == Qt.Key_A:
-            drone.send_rc_control(-30, 0, 0, 0)  # Left
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(lr=-30)  # Left
         elif key == Qt.Key_D:
-            drone.send_rc_control(30, 0, 0, 0)  # Right
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(lr=30)  # Right
         elif key == Qt.Key_Up:
-            drone.send_rc_control(0, 0, 30, 0)  # Up
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(ud=30)  # Up
         elif key == Qt.Key_Down:
-            drone.send_rc_control(0, 0, -30, 0)  # Down
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(ud=-30)  # Down
         elif key == Qt.Key_E:
-            drone.send_rc_control(0, 0, 0, 30) # Rotate clockwise
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(yaw=30)  # Rotate clockwise
         elif key == Qt.Key_Q:
-            drone.send_rc_control(0, 0, 0, -30)  # Rotate counter-clockwise
-            tracker.update_position()
-            time.sleep(0.5)
+            self.move_drone(yaw=-30)  # Rotate counterclockwise
         elif key == Qt.Key_C:
-            toggle_camera()  # Camera toggle on 'C' key
+            toggle_camera()
+
+    def move_drone(self, lr=0, fb=0, ud=0, yaw=0):
+        drone.send_rc_control(lr, fb, ud, yaw)
+        tracker.update_position(lr, fb, ud, yaw)
 
     def keyReleaseEvent(self, event):
         # Stop all drone movement when a key is released

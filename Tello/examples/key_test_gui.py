@@ -1,17 +1,18 @@
 import sys
-import threading
 import cv2
-import cv2.aruco as aruco
-import numpy as np
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QSizePolicy, QSlider, QFrame, QComboBox, QCheckBox)
-from PyQt5.QtGui import QPalette, QPixmap, QBrush, QImage, QIcon
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize
-from djitellopy import Tello
 import time
 import math
-from collections import deque
+import threading
 import matplotlib
+import numpy as np
+import cv2.aruco as aruco
+from threading import Event
+from djitellopy import Tello
+from collections import deque
 import matplotlib.pyplot as plt
+from PyQt5.QtGui import QPalette, QPixmap, QBrush, QImage, QIcon
+from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize, QMetaObject, Q_ARG
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QSizePolicy, QSlider, QFrame, QComboBox, QCheckBox)
 
 # ArUco tracking setup
 drone = Tello()
@@ -36,6 +37,8 @@ last_aruco_area = 0
 last_aruco_image = None
 some_log = []
 hazards = []
+grid_search_stop_event = Event()
+grid_search_pause_event = Event()
 
 # Constants
 SPEED = 60
@@ -44,7 +47,6 @@ LANDING_THRESHOLD = 1500  # Increased to avoid premature landing
 DISTANCE_THRESHOLD = 0  # Distance threshold for moving forward
 SWITCH_UP_THRESHOLD = 22
 SWITCH_DOWN_THRESHOLD = 22
-
 
 # Function to find a human face in the provided image frame
 def find_human(img):
@@ -470,43 +472,54 @@ def hazard_detected(x, y, z, yaw):
 
 def grid_search_mode_rc(area_width_cm=300, area_height_cm=300, lane_spacing_cm=50):
     print("Starting grid search with RC...")
+    grid_search_stop_event.clear()
+    grid_search_pause_event.set()
+
     time_per_lane = area_width_cm / SPEED
     rows = int(area_height_cm / lane_spacing_cm)
-    
-    for row in range(rows):
-        # Move across
-        if row % 2 == 0:
-            print(f"Row {row + 1}: Moving right {area_width_cm} cm")
-            drone.send_rc_control(SPEED, 0, 0, 0)
-            tracker.update_position(SPEED)
-        else:
-            print(f"Row {row + 1}: Moving left {area_width_cm} cm")
-            drone.send_rc_control(-SPEED, 0, 0, 0)
-            tracker.update_position(-SPEED)
-        
-        # Continuously check for hazards during the movement
-        x,y,z,yaw=tracker.get_position()  # Get position while moving
-        if is_proximity_hazard(z):  # Check if the drone is too close to an obstacle
-            hazard_detected(x, y, z, yaw)  # Log hazard if detected
 
-        # Optionally capture the camera feed and check for obstacles visually
-        camera_frame = drone.get_frame_read().frame  # Assuming this gives the camera feed
-        if is_proximity_hazard(z, camera_frame):  # Check visually for obstacles
-            hazard_detected(x, y, z, yaw)  # Log hazard if detected
+    for row in range(rows):
+        if grid_search_stop_event.is_set():
+            print("Grid search stopped.")
+            break
+
+        grid_search_pause_event.wait()  # Pause check
+
+        direction = SPEED if row % 2 == 0 else -SPEED
+        print(f"Row {row + 1}: Moving {'right' if direction > 0 else 'left'} {area_width_cm} cm")
+        drone.send_rc_control(direction, 0, 0, 0)
+        tracker.update_position(direction)
+
+        # === Hazard detection during movement ===
+        x, y, z, yaw = tracker.get_position()
+        if is_proximity_hazard(z):
+            hazard_detected(x, y, z, yaw)
+
+        camera_frame = drone.get_frame_read().frame
+        if is_proximity_hazard(z, camera_frame):
+            hazard_detected(x, y, z, yaw)
 
         time.sleep(time_per_lane)
-        drone.send_rc_control(0, 0, 0, 0)  # Stop movement
+        drone.send_rc_control(0, 0, 0, 0)
 
-        # Move forward between lanes
+        # === Move to next row ===
         if row != rows - 1:
+            if grid_search_stop_event.is_set():
+                print("Stopped before next row.")
+                break
+
+            grid_search_pause_event.wait()
+
             print(f"Row {row + 1}: Moving forward {lane_spacing_cm} cm")
             drone.send_rc_control(0, SPEED, 0, 0)
             tracker.update_position(SPEED)
             time.sleep(lane_spacing_cm / SPEED)
-            drone.send_rc_control(0, 0, 0, 0)  # Stop movement
+            drone.send_rc_control(0, 0, 0, 0)
 
-    # After the grid search is completed, plot the hazards
+    print("Grid search complete.")
     plot_hazards()
+
+    QMetaObject.invokeMethod(gui.grid_controls_widget, "setVisible", Qt.QueuedConnection, Q_ARG(bool, False))
 
 def is_proximity_hazard(z, camera_frame=None):
     # Hazard detection based on altitude (z < 50 cm) as an example
@@ -527,24 +540,11 @@ def is_proximity_hazard(z, camera_frame=None):
     
     return False
 
-def get_distance_to_target(marker_size_cm=20):
-    """
-    Estimate distance based on marker size in image.
-    """
-    perceived_width_pixels = detect_marker_width()  # You have to implement
-    focal_length = 700  # You may need to calibrate this
-
-    if perceived_width_pixels == 0:
-        return None  # No marker found
-
-    distance_cm = (marker_size_cm * focal_length) / perceived_width_pixels
-    return distance_cm
-
 def plot_hazards():
     if hazards:
         x_vals, y_vals = zip(*hazards)  # Unzip list of (x, y) coordinates
         plt.figure(figsize=(8, 6))
-        plt.scatter(x_vals, y_vals, color='red', marker='x')
+        plt.scatter(x_vals, y_vals, c='red', marker='x')
         plt.title("Hazard Locations")
         plt.xlabel("X (cm)")
         plt.ylabel("Y (cm)")
@@ -600,24 +600,6 @@ def smooth_follow(setpoint_x=0, setpoint_y=0):
 
     drone.send_rc_control(int(x_output), 0, int(y_output), 0)
 
-# Assume you already have a working drone video feed frame
-def get_face_offset_x(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-
-    frame_center_x = frame.shape[1] // 2
-
-    if len(faces) == 0:
-        return 0  # No face, assume centered
-
-    # Use first detected face
-    (x, y, w, h) = faces[0]
-    face_center_x = x + w // 2
-
-    offset_x = face_center_x - frame_center_x
-    return offset_x  # Positive = right, Negative = left
-
-def get_face_offset_y(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
@@ -653,6 +635,19 @@ def detect_marker_width(frame, target_id=0):
             return width
 
     return 0  # Target marker not found
+
+def get_distance_to_target(marker_size_cm=20):
+    """
+    Estimate distance based on marker size in image.
+    """
+    perceived_width_pixels = detect_marker_width()  # You have to implement
+    focal_length = 700  # You may need to calibrate this
+
+    if perceived_width_pixels == 0:
+        return None  # No marker found
+
+    distance_cm = (marker_size_cm * focal_length) / perceived_width_pixels
+    return distance_cm
 
 # GUI Class
 class TelloGUI(QMainWindow):
@@ -812,7 +807,7 @@ class TelloGUI(QMainWindow):
             ("Return to Start", return_to_start, "#16a085"),
             ("Auto Hover", auto_hover, "#2980b9"),
             ("Smooth Follow", smooth_follow, "#c0392b"),
-            ("Grid Search Mode", grid_search_mode_rc, "#27ae60"),
+            ("Grid Search Mode", self.start_grid_search_mode, "#27ae60"),
             ("Hazard Detected", hazard_detected, "#e84393"),
         ]
 
@@ -827,9 +822,47 @@ class TelloGUI(QMainWindow):
         self.new_features_widget.setLayout(new_features_layout)
         self.new_features_widget.setVisible(False)  # Hide initially
 
+        # === GRID SEARCH CONTROLS (Hidden by default) ===
+        self.grid_controls_widget = QWidget()
+        self.grid_controls_layout = QHBoxLayout()
+        self.grid_controls_layout.setAlignment(Qt.AlignCenter)
+
+        # Pause Button
+        self.pause_button = QPushButton()
+        self.pause_button.setIcon(QIcon("./Images/pause.png"))
+        self.pause_button.setIconSize(QSize(40, 40))
+        self.pause_button.setFixedSize(50, 50)
+        self.pause_button.setStyleSheet("background-color: transparent; border: none;")
+        self.pause_button.clicked.connect(lambda: grid_search_pause_event.clear())
+
+        # Resume Button
+        self.resume_button = QPushButton()
+        self.resume_button.setIcon(QIcon("./Images/play.png"))
+        self.resume_button.setIconSize(QSize(40, 40))
+        self.resume_button.setFixedSize(50, 50)
+        self.resume_button.setStyleSheet("background-color: transparent; border: none;")
+        self.resume_button.clicked.connect(lambda: grid_search_pause_event.set())
+
+        # Stop Button
+        self.stop_button = QPushButton()
+        self.stop_button.setIcon(QIcon("./Images/stop.png"))
+        self.stop_button.setIconSize(QSize(40, 40))
+        self.stop_button.setFixedSize(50, 50)
+        self.stop_button.setStyleSheet("background-color: transparent; border: none;")
+        self.stop_button.clicked.connect(lambda: grid_search_stop_event.set())
+
+        self.grid_controls_layout.addWidget(self.pause_button)
+        self.grid_controls_layout.addWidget(self.resume_button)
+        self.grid_controls_layout.addWidget(self.stop_button)
+
+        self.grid_controls_widget.setLayout(self.grid_controls_layout)
+        self.grid_controls_widget.setVisible(False)  # Start Hidden
+
+        # Add to the layout below feature buttons
         left_main_area.addWidget(spacer)
         left_main_area.addLayout(button_layout)
         left_main_area.addWidget(self.new_features_widget)
+        left_main_area.addWidget(self.grid_controls_widget)
 
         main_layout.addLayout(left_main_area)
 
@@ -844,9 +877,13 @@ class TelloGUI(QMainWindow):
         self.pid_title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: black;")
         self.side_menu_layout.addWidget(self.pid_title_label)
 
-        self.p_slider = self.create_pid_slider("P Gain", self.side_menu_layout, default_value=30)
-        self.i_slider = self.create_pid_slider("I Gain", self.side_menu_layout, default_value=0.05)
-        self.d_slider = self.create_pid_slider("D Gain", self.side_menu_layout, default_value=10)
+        # PD Sliders (0.00 to 1.00), and I Sliders (0.0000 to 0.0100)
+        self.p_slider = self.create_labeled_slider("P Gain", self.side_menu_layout, default=30, callback=self.update_pid_values)
+        self.i_slider = self.create_labeled_slider("I Gain", self.side_menu_layout, default=5, max_val=100, scale=10000, callback=self.update_pid_values, decimal_places=6)
+        self.d_slider = self.create_labeled_slider("D Gain", self.side_menu_layout, default=10, callback=self.update_pid_values)
+
+        # Speed Slider (10–100)
+        self.speed_slider = self.create_labeled_slider("Drone Speed", self.side_menu_layout, default=60, min_val=10, max_val=100, scale=1, callback=self.update_speed)
 
         # --- Speed Control Title ---
         self.speed_title_label = QLabel("Drone Speed")
@@ -893,52 +930,101 @@ class TelloGUI(QMainWindow):
         container.setLayout(main_layout)  # Set the main layout for the container
         self.setCentralWidget(container)  # Set the container as the central widget
     
-    def create_pid_slider(self, label_text, parent_layout, default_value=0, min_val=0, max_val=100, scale=100):
-        # Title
+    def create_labeled_slider(self, label_text, layout, default=50, min_val=0, max_val=100, scale=100, callback=None, show_value_label=True, decimal_places=2):
         label = QLabel(label_text)
         label.setStyleSheet("font-size: 14px; font-weight: bold; color: black;")
-        parent_layout.addWidget(label)
+        layout.addWidget(label)
 
-        # Layout: slider + value label
-        layout = QHBoxLayout()
-
+        h_layout = QHBoxLayout()
         slider = QSlider(Qt.Horizontal)
         slider.setRange(min_val, max_val)
-        slider.setValue(default_value)
+        slider.setValue(default)
         slider.setTickInterval(5)
         slider.setTickPosition(QSlider.TicksBelow)
         slider.setStyleSheet("height: 20px;")
 
-        value_label = QLabel(f"{default_value/scale:.2f}")
-        value_label.setFixedWidth(40)
-        value_label.setStyleSheet("font-size: 14px; font-weight: bold; color: black;")
+        value_label = QLabel(f"{default / scale:.{decimal_places}f}")
+        value_label.setFixedWidth(60)
+        value_label.setStyleSheet("font-size: 14px; font-weight: bold; color: black; ")
 
-        # Update label when slider moves
-        def update_label():
-            value = slider.value()
-            value_label.setText(f"{value/scale:.2f}")
-            self.update_pid_values()
-            slider.valueChanged.connect(update_label)
+        def update_value():
+            val = slider.value()
+            if show_value_label:
+                value_label.setText(f"{val / scale:.{decimal_places}f}")
+            if callback:
+                callback()
 
-        layout.addWidget(slider)
-        layout.addWidget(value_label)
-        parent_layout.addLayout(layout)
+        slider.valueChanged.connect(update_value)
+
+        h_layout.addWidget(slider)
+        if show_value_label:
+            h_layout.addWidget(value_label)
+
+        layout.addLayout(h_layout)
 
         return slider
-
+    
     def update_pid_values(self):
         p = self.p_slider.value() / 100.0
         i = self.i_slider.value() / 10000.0
         d = self.d_slider.value() / 100.0
-
-        # Update your PID controller values here
-        print(f"Updated PID values: P={p}, I={i}, D={d}")
+        print(f"Updated PID: P={p}, I={i}, D={d}")
 
     def update_speed(self):
         global SPEED
         SPEED = self.speed_slider.value()
         self.speed_value_label.setText(str(SPEED))  # Update the label live
         print(f"Speed updated to {SPEED}")
+
+    def toggle_side_menu(self):
+        if self.side_menu.isVisible():
+            # Animate closing (slide left)
+            start_rect = self.side_menu.geometry()
+            end_rect = QRect(start_rect.x(), start_rect.y(), 0, start_rect.height())
+
+            self.side_menu_animation.setStartValue(start_rect)
+            self.side_menu_animation.setEndValue(end_rect)
+            self.side_menu_animation.start()
+
+            # After animation finishes, hide the side menu
+            self.side_menu_animation.finished.connect(lambda: self.side_menu.setVisible(False))
+
+        else:
+            # First make it visible and set width 0 (collapsed)
+            self.side_menu.setVisible(True)
+            collapsed_rect = QRect(self.side_menu.x(), self.side_menu.y(), 0, self.side_menu.height())
+            expanded_rect = QRect(self.side_menu.x(), self.side_menu.y(), 250, self.side_menu.height())  # 250px wide side menu
+
+            self.side_menu.setGeometry(collapsed_rect)
+
+            self.side_menu_animation.setStartValue(collapsed_rect)
+            self.side_menu_animation.setEndValue(expanded_rect)
+            self.side_menu_animation.start()
+
+    def animate_side_menu(self):
+        self.side_menu_animation.stop()
+
+        if self.side_menu_expanded:
+            start_width = 250
+            end_width = 0
+        else:
+            start_width = 0
+            end_width = 250
+
+        self.side_menu_animation = QPropertyAnimation(self.side_menu, b"maximumWidth")
+        self.side_menu_animation.setDuration(300)
+        self.side_menu_animation.setStartValue(start_width)
+        self.side_menu_animation.setEndValue(end_width)
+        self.side_menu_animation.setEasingCurve(QEasingCurve.InOutCubic)
+        self.side_menu_animation.start()
+
+        self.side_menu_expanded = not self.side_menu_expanded
+
+    def toggle_advanced_mode(self, state):
+            if state == Qt.Checked:
+                self.new_features_widget.setVisible(True)
+            else:
+                self.new_features_widget.setVisible(False)
 
     def show_landed_message():
         # Create a message box to inform the user about the landing status
@@ -1003,7 +1089,7 @@ class TelloGUI(QMainWindow):
             elif temp >= 90 and temp < 100:
                 self.temp_label.setStyleSheet("color: orange; font-size: 20px; font-weight: bold;") # Change color to orange if temperature is high
             elif temp >= 80 and temp < 90:
-                self.temp_label.setStyleSheet("color: yellow; font-size: 20px; font-weight: bold;") # Change color to red if temperature is slightly high
+                self.temp_label.setStyleSheet("color: gold; font-size: 20px; font-weight: bold;") # Change color to gold if temperature is slightly high
             else:
                 self.temp_label.setStyleSheet("color: black; font-size: 20px; font-weight: bold;")
         except Exception as e:
@@ -1036,6 +1122,10 @@ class TelloGUI(QMainWindow):
     def start_human_tracking(self):
         self.thread = threading.Thread(target=track_human, daemon=True)
         self.thread.start()
+
+    def start_grid_search_mode(self):
+        self.grid_controls_widget.setVisible(True)  # Show the Pause/Resume/Stop controls
+        threading.Thread(target=grid_search_mode_rc, daemon=True).start()
 
     def safe_go_to_aruco_and_land(self):
         # Execute the landing sequence safely
@@ -1090,56 +1180,6 @@ class TelloGUI(QMainWindow):
     def keyReleaseEvent(self, event):
         # Stop all drone movement when a key is released
         drone.send_rc_control(0, 0, 0, 0)  # Stop all movement when key is released
-
-    def toggle_side_menu(self):
-        if self.side_menu.isVisible():
-            # Animate closing (slide left)
-            start_rect = self.side_menu.geometry()
-            end_rect = QRect(start_rect.x(), start_rect.y(), 0, start_rect.height())
-
-            self.side_menu_animation.setStartValue(start_rect)
-            self.side_menu_animation.setEndValue(end_rect)
-            self.side_menu_animation.start()
-
-            # After animation finishes, hide the side menu
-            self.side_menu_animation.finished.connect(lambda: self.side_menu.setVisible(False))
-
-        else:
-            # First make it visible and set width 0 (collapsed)
-            self.side_menu.setVisible(True)
-            collapsed_rect = QRect(self.side_menu.x(), self.side_menu.y(), 0, self.side_menu.height())
-            expanded_rect = QRect(self.side_menu.x(), self.side_menu.y(), 250, self.side_menu.height())  # 250px wide side menu
-
-            self.side_menu.setGeometry(collapsed_rect)
-
-            self.side_menu_animation.setStartValue(collapsed_rect)
-            self.side_menu_animation.setEndValue(expanded_rect)
-            self.side_menu_animation.start()
-
-    def animate_side_menu(self):
-        self.side_menu_animation.stop()
-
-        if self.side_menu_expanded:
-            start_width = 250
-            end_width = 0
-        else:
-            start_width = 0
-            end_width = 250
-
-        self.side_menu_animation = QPropertyAnimation(self.side_menu, b"maximumWidth")
-        self.side_menu_animation.setDuration(300)
-        self.side_menu_animation.setStartValue(start_width)
-        self.side_menu_animation.setEndValue(end_width)
-        self.side_menu_animation.setEasingCurve(QEasingCurve.InOutCubic)
-        self.side_menu_animation.start()
-
-        self.side_menu_expanded = not self.side_menu_expanded
-
-    def toggle_advanced_mode(self, state):
-            if state == Qt.Checked:
-                self.new_features_widget.setVisible(True)
-            else:
-                self.new_features_widget.setVisible(False)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv) # Create the application

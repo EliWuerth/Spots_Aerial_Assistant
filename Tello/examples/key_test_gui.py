@@ -10,6 +10,7 @@ from djitellopy import Tello
 import time
 import math
 from collections import deque
+import matplotlib
 import matplotlib.pyplot as plt
 
 # ArUco tracking setup
@@ -43,6 +44,7 @@ LANDING_THRESHOLD = 1500  # Increased to avoid premature landing
 DISTANCE_THRESHOLD = 0  # Distance threshold for moving forward
 SWITCH_UP_THRESHOLD = 22
 SWITCH_DOWN_THRESHOLD = 22
+
 
 # Function to find a human face in the provided image frame
 def find_human(img):
@@ -440,17 +442,22 @@ def return_to_start():
             func
 
     safe_move(drone.move_back(current_x), current_x)
-    tracker.update_position(forward_cm=-current_x)
+    tracker.update_position(fb=-current_x)
 
     safe_move(drone.move_left(current_y), current_y)
-    tracker.update_position(right_cm=-current_y)
+    tracker.update_position(lr=-current_y)
 
     safe_move(drone.move_down(current_z), current_z)
-    tracker.update_position(up_cm=-current_z)
+    tracker.update_position(ud=-current_z)
+
+    safe_move(drone.rotate_clockwise(current_yaw),current_yaw)
+    tracker.update_position(yaw=current_yaw)
 
 def auto_hover():
     print("Auto hover engaged.")
     drone.send_rc_control(0, 0, 0, 0)
+
+matplotlib.use('Agg')
 
 def hazard_detected(x, y, z, yaw):
     x, y, z, yaw = tracker.get_position()
@@ -541,10 +548,11 @@ def plot_hazards():
         plt.title("Hazard Locations")
         plt.xlabel("X (cm)")
         plt.ylabel("Y (cm)")
+        plt.grid(True)
         
         # Save the plot to a file
-        plt.savefig('hazards_map.png')  # Save as a PNG file
-        plt.close()  # Close the plot to avoid window popping up
+        plt.savefig("hazards_map.png")
+        plt.close()
     else:
         print("No hazards to plot.")
 
@@ -571,6 +579,7 @@ def detect_face_offset(frame):
 
     return offset_x, offset_y, frame
 
+# Doesn't work
 def smooth_follow(setpoint_x=0, setpoint_y=0):
     pid_x = PIDController(p=0.3, i=0.0005, d=0.1)
     pid_y = PIDController(p=0.3, i=0.0005, d=0.1)
@@ -835,9 +844,9 @@ class TelloGUI(QMainWindow):
         self.pid_title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: black;")
         self.side_menu_layout.addWidget(self.pid_title_label)
 
-        self.p_slider = self.create_pid_slider("P Gain", self.side_menu_layout)
-        self.i_slider = self.create_pid_slider("I Gain", self.side_menu_layout)
-        self.d_slider = self.create_pid_slider("D Gain", self.side_menu_layout)
+        self.p_slider = self.create_pid_slider("P Gain", self.side_menu_layout, default_value=30)
+        self.i_slider = self.create_pid_slider("I Gain", self.side_menu_layout, default_value=0.05)
+        self.d_slider = self.create_pid_slider("D Gain", self.side_menu_layout, default_value=10)
 
         # --- Speed Control Title ---
         self.speed_title_label = QLabel("Drone Speed")
@@ -884,6 +893,47 @@ class TelloGUI(QMainWindow):
         container.setLayout(main_layout)  # Set the main layout for the container
         self.setCentralWidget(container)  # Set the container as the central widget
     
+    def create_pid_slider(self, label_text, parent_layout, default_value=0, min_val=0, max_val=100, scale=100):
+        # Title
+        label = QLabel(label_text)
+        label.setStyleSheet("font-size: 14px; font-weight: bold; color: black;")
+        parent_layout.addWidget(label)
+
+        # Layout: slider + value label
+        layout = QHBoxLayout()
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(min_val, max_val)
+        slider.setValue(default_value)
+        slider.setTickInterval(5)
+        slider.setTickPosition(QSlider.TicksBelow)
+        slider.setStyleSheet("height: 20px;")
+
+        value_label = QLabel(f"{default_value/scale:.2f}")
+        value_label.setFixedWidth(40)
+        value_label.setStyleSheet("font-size: 14px; font-weight: bold; color: black;")
+
+        # Update label when slider moves
+        def update_label():
+            value = slider.value()
+            value_label.setText(f"{value/scale:.2f}")
+            self.update_pid_values()
+            slider.valueChanged.connect(update_label)
+
+        layout.addWidget(slider)
+        layout.addWidget(value_label)
+        parent_layout.addLayout(layout)
+
+        return slider
+
+    def update_pid_values(self):
+        p = self.p_slider.value() / 100.0
+        i = self.i_slider.value() / 10000.0
+        d = self.d_slider.value() / 100.0
+
+        # Update your PID controller values here
+        print(f"Updated PID values: P={p}, I={i}, D={d}")
+
     def update_speed(self):
         global SPEED
         SPEED = self.speed_slider.value()
@@ -1040,18 +1090,6 @@ class TelloGUI(QMainWindow):
     def keyReleaseEvent(self, event):
         # Stop all drone movement when a key is released
         drone.send_rc_control(0, 0, 0, 0)  # Stop all movement when key is released
-
-    def create_pid_slider(self, label_text, layout):
-        label = QLabel(label_text)
-        label.setStyleSheet("font-size: 14px; color: black;")
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(0, 100)
-        slider.setValue(50)
-        slider.setTickInterval(1)
-        slider.setStyleSheet("height: 20px;")
-        layout.addWidget(label)
-        layout.addWidget(slider)
-        return slider
 
     def toggle_side_menu(self):
         if self.side_menu.isVisible():

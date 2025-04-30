@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QComboBox, QMessageBox, QSizePolicy, QFormLayout, QDialog, QAction)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QComboBox, QMessageBox, QSizePolicy, QFormLayout, QDialog, QAction, QFrame,QSlider)
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt, QTimer
 import sys
@@ -59,6 +59,8 @@ status_label = None
 battery_label = None
 canvas = None
 root = None
+conn = sqlite3.connect('users.db')
+cursor = conn.cursor()
 
 # Define valid credentials and IP for demonstration purposes
 VALID_USERNAME = "user2"
@@ -510,7 +512,7 @@ def check_battery_status(widget):
             else:
                 color = "red"
 
-            battery_label.setStyleSheet(f"color: {color}; font-size: 20px; font-style:bold;")
+            battery_label.setStyleSheet(f"color: {color}; font-size: 20px; font-weight:bold;")
         else:
             battery_label.setText("Battery info unavailable")
 
@@ -761,6 +763,73 @@ def mainInterface():
     central_widget = QWidget()
     main_window.setCentralWidget(central_widget)
 
+    side_menu = QFrame()
+    side_menu.setFixedWidth(200)
+    side_menu.setStyleSheet("background-color: #2c3e50; color: white;")
+    side_menu.setVisible(False)  # Initially hidden
+
+    side_layout = QVBoxLayout()
+    side_layout.setAlignment(Qt.AlignTop)
+
+    # Add some buttons or labels to side menu
+    side_layout.addWidget(QLabel("Settings", alignment=Qt.AlignCenter))
+
+    # --- Speed Slider Section ---
+    speed_slider_layout = QVBoxLayout()
+    speed_slider_layout.setAlignment(Qt.AlignHCenter)
+
+    speed_label = QLabel("Speed: 0.5 m/s")
+    speed_label.setStyleSheet("font-size: 16px; color: white;")
+    speed_label.setAlignment(Qt.AlignCenter)
+
+    speed_slider = QSlider(Qt.Horizontal)
+    speed_slider.setMinimum(1)     # Represents 0.1 m/s
+    speed_slider.setMaximum(10)    # Represents 1.0 m/s
+    speed_slider.setValue(5)       # Default value = 0.5 m/s
+    speed_slider.setTickInterval(1)
+    speed_slider.setTickPosition(QSlider.TicksBelow)
+    speed_slider.setFixedWidth(200)
+
+    def update_speed(value):
+        global VELOCITY_BASE_SPEED
+        VELOCITY_BASE_SPEED = value / 10.0
+        speed_label.setText(f"Speed: {VELOCITY_BASE_SPEED:.1f} m/s")
+
+    speed_slider.valueChanged.connect(update_speed)
+
+    speed_slider_layout.addWidget(speed_label)
+    speed_slider_layout.addWidget(speed_slider)
+
+    # --- Angular Speed Slider Section ---
+    angular_slider_layout = QVBoxLayout()
+    angular_slider_layout.setAlignment(Qt.AlignHCenter)
+
+    angular_label = QLabel("Angular Speed: 0.8 rad/s")
+    angular_label.setStyleSheet("font-size: 16px; color: white;")
+    angular_label.setAlignment(Qt.AlignCenter)
+
+    angular_slider = QSlider(Qt.Horizontal)
+    angular_slider.setMinimum(1)     # Represents 0.1 rad/s
+    angular_slider.setMaximum(15)    # Represents 1.5 rad/s
+    angular_slider.setValue(8)       # Default value = 0.8 rad/s
+    angular_slider.setTickInterval(1)
+    angular_slider.setTickPosition(QSlider.TicksBelow)
+    angular_slider.setFixedWidth(200)
+
+    def update_angular_speed(value):
+        global VELOCITY_BASE_ANGULAR
+        VELOCITY_BASE_ANGULAR = value / 10.0
+        angular_label.setText(f"Angular Speed: {VELOCITY_BASE_ANGULAR:.1f} rad/s")
+
+    angular_slider.valueChanged.connect(update_angular_speed)
+
+    side_layout.addWidget(speed_label)
+    side_layout.addWidget(speed_slider)
+    side_layout.addWidget(angular_label)
+    side_layout.addWidget(angular_slider)
+
+    side_menu.setLayout(side_layout)
+
     # --- Background Image Label (scales with window) ---
     class ResizableBackground(QLabel):
         def __init__(self, image_path):
@@ -783,9 +852,13 @@ def mainInterface():
     overlay_widget = QWidget(central_widget)  # Set central_widget as parent
     overlay_widget.setStyleSheet("background: transparent;")
     overlay_layout = QVBoxLayout()
+    main_layout = QHBoxLayout(central_widget)
     overlay_layout.setAlignment(Qt.AlignCenter)
     overlay_widget.setLayout(overlay_layout)
     overlay_widget.setGeometry(central_widget.rect())  # Initially fill the central widget
+
+    main_layout.addWidget(side_menu)
+    main_layout.addWidget(overlay_widget)
 
     # -- Container with buttons/labels --
     container = QWidget()
@@ -794,13 +867,19 @@ def mainInterface():
 
     # Battery label
     battery_label = QLabel("Battery: N/A")
-    battery_label.setStyleSheet("color: green; font-size: 20px; font-style:bold;")
+    battery_label.setStyleSheet("color: green; font-size: 20px; font-weight:bold;")
     battery_label.setAlignment(Qt.AlignCenter)
     battery_timer = QTimer()
     battery_timer.timeout.connect(lambda: check_battery_status(main_window))
     battery_timer.start(5000)  # update every 5 seconds
     check_battery_status(main_window)  # initial call
     container_layout.addWidget(battery_label)
+
+    toggle_menu_button = QPushButton("☰ Menu")
+    toggle_menu_button.setFixedSize(100, 30)
+    toggle_menu_button.setStyleSheet("background-color: #34495e; color: white; font-size: 14px;")
+    toggle_menu_button.clicked.connect(lambda: side_menu.setVisible(not side_menu.isVisible()))
+    container_layout.insertWidget(0, toggle_menu_button)
 
     # Camera selector
     cam_layout = QHBoxLayout()
@@ -961,21 +1040,21 @@ class RobotControlApp(QMainWindow):
         spacer.setFixedHeight(10)
 
         user_label = QLabel("Username:")
-        user_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        user_label.setStyleSheet("color: black; font-size: 16px; font-weight:bold;")
         username_input.setPlaceholderText("Enter username")
         username_input.setToolTip("Username must be unique")
-        username_input.setMaxLength(20)
+        # username_input.setMaxLength(20)
         username_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
         
         password_label = QLabel("Password:")
-        password_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        password_label.setStyleSheet("color: black; font-size: 16px; font-weight:bold;")
         password_input.setPlaceholderText("Enter password")
         password_input.setToolTip("Password must be at least 6 characters long")
         password_input.setMaxLength(20)
         password_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
 
         ip_label = QLabel("IP Address:")
-        ip_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        ip_label.setStyleSheet("color: black; font-size: 16px; font-weight:bold;")
         ip_input.setPlaceholderText("Enter IP Address")
         ip_input.setToolTip("Enter the IP address of the robot")
         ip_input.setMaxLength(15)
@@ -991,8 +1070,29 @@ class RobotControlApp(QMainWindow):
         form_widget.setLayout(login_form)
         form_widget.setStyleSheet("background-color: white; border-radius: 10px; padding: 20px;")
 
+        self.dev_button = QPushButton("")
+        self.dev_button.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    border: none;
+                    padding: 0;
+                }
+                QPushButton:hover {
+                    background-color: #27ae60;
+                    border: 1px solid white;
+                    border-radius: 5px;
+                }
+            """)
+        self.dev_button.setFixedSize(30, 10)
+        self.dev_button.clicked.connect(self.dev_login)
+        corner_button = QWidget()
+        corner_layout = QHBoxLayout()
+        corner_layout.addWidget(self.dev_button)
+        corner_button.setLayout(corner_layout)
+
         center_layout = QHBoxLayout()
         center_layout.addStretch(1)  # Add flexible space before the form
+        center_layout.addWidget(corner_button)
         center_layout.addWidget(form_widget)
         center_layout.addStretch(1)  # Add flexible space after the form
         center_layout.setAlignment(Qt.AlignCenter)  # Center the layout
@@ -1001,7 +1101,9 @@ class RobotControlApp(QMainWindow):
         layout = QVBoxLayout()
         error_label = QLabel("")  # Label for error messages
         error_label.setFixedHeight(10)
+
         layout.addWidget(error_label)
+        # layout.addWidget(corner_button)
         layout.addLayout(center_layout)  # Add the centered layout to the main layout
 
         # Set central widget
@@ -1014,11 +1116,15 @@ class RobotControlApp(QMainWindow):
         bg_label.setGeometry(container.rect())
         bg_label.lower()  # Ensure it's behind the overlay
 
-        # Initialize database
-        self.init_db()
+    def dev_login(self):
+        # Hardcoded developer credentials and IP
+        os.environ['BOSDYN_CLIENT_USERNAME'] = "user2"
+        os.environ['BOSDYN_CLIENT_PASSWORD'] = "simplepassword"
+        global IP
+        IP = "192.168.80.3"  # or use your actual dev IP
 
-        # Show login dialog
-        self.show_login_dialog()
+        self.close()  # close the login window
+        mainInterface()  # launch the main interface directly
 
     def create_menu(self):
         menu_bar = self.menuBar()
@@ -1027,48 +1133,8 @@ class RobotControlApp(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-    def show_login_dialog(self):
-        dialog = LoginDialog(self)
-        # Make sure we block until the dialog is finished, using exec_() correctly
-        result = dialog.exec_()
-        if result == QDialog.Accepted:
-            self.statusBar().showMessage("User Login successful")
-            # mainInterface()  # Show the main window
-        else:
-            QApplication.quit()
-
-    def init_db(self):
-        # Initialize the SQLite database
-        self.conn = sqlite3.connect('users.db')
-        self.cursor = self.conn.cursor()
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT NOT NULL)''')
-        self.conn.commit()
-
-    def register_user(self, username, password):
-        if self.user_exists(username):
-            QMessageBox.warning(self, "Registration Error", "User  already exists.")
-            return False
-        hashed_password = self.hash_password(password)
-        self.cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, hashed_password))
-        self.conn.commit()
-        QMessageBox.information(self, "Registration", "User  registered successfully.")
-        return True
-
-    def login_user(self, username, password):
-        hashed_password = self.hash_password(password)
-        self.cursor.execute('SELECT * FROM users WHERE username = ? AND password = ?', (username, hashed_password))
-        return self.cursor.fetchone() is not None
-
-    def user_exists(self, username):
-        self.cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
-        return self.cursor.fetchone() is not None
-
-    def hash_password(self, password):
-        return hashlib.sha256(password.encode()).hexdigest()
-
     def closeEvent(self, event):
         # Ensure everything is cleaned up before the app closes
-        self.conn.close()  # Close the database connection
         event.accept()  # Accept the event and close the application
 
 class ResizableBackground(QLabel):
@@ -1084,10 +1150,11 @@ class ResizableBackground(QLabel):
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
 
 class RegisterDialog(QDialog):
-    def __init__(self, login_dialog):
-        super().__init__(login_dialog.parent())
-        self.login_dialog = login_dialog
-        self.setWindowTitle("Login")
+    def __init__(self, conn, cursor, parent=None):
+        super().__init__(parent)
+        self.conn = conn
+        self.cursor = cursor
+        self.setWindowTitle("Register")
         self.setGeometry(100, 100, 400, 300)
 
         # --- Background Image ---
@@ -1103,14 +1170,14 @@ class RegisterDialog(QDialog):
         self.password_input.setEchoMode(QLineEdit.Password)
 
         user_label = QLabel("Username:")
-        user_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        user_label.setStyleSheet("color: black; font-size: 16px; font-weight:bold;")
         self.username_input.setPlaceholderText("Enter username")
         self.username_input.setToolTip("Username must be unique")
         self.username_input.setMaxLength(20)
         self.username_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
         
         password_label = QLabel("Password:")
-        password_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        password_label.setStyleSheet("color: black; font-size: 16px; font-weight:bold;")
         self.password_input.setPlaceholderText("Enter password")
         self.password_input.setToolTip("Password must be at least 6 characters long")
         self.password_input.setMaxLength(20)
@@ -1131,7 +1198,7 @@ class RegisterDialog(QDialog):
         login_form.addRow(self.register_button)
 
         self.back_button = QPushButton("Go Back", self)
-        self.back_button.setStyleSheet("background-color: grey; color: white; font-size: 14px;")
+        self.back_button.setStyleSheet("background-color: lightGray; color: white; font-size: 14px;")
         self.back_button.clicked.connect(self.go_back)
         login_form.addRow(self.back_button)
 
@@ -1168,18 +1235,28 @@ class RegisterDialog(QDialog):
             QMessageBox.warning(self, "Password Error", "Password must be at least 6 characters long.")
             return
 
-        if self.parent().register_user(username, password):
-            QMessageBox.information(self, "Success", "Account created successfully.")
-            self.accept()
-        else:
-            QMessageBox.warning(self, "Error", "User already exists.")
+        if self.user_exists(username):
+            QMessageBox.warning(self, "Registration Error", "User  already exists.")
+            return
+
+        hashed_password = self.hash_password(password)
+        cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, hashed_password))
+        conn.commit()
+        QMessageBox.information(self, "Registration", "User  registered successfully.")
+        self.accept()
+
+    def user_exists(self, username):
+        cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+        return cursor.fetchone() is not None
+
+    def hash_password(self, password):
+        return hashlib.sha256(password.encode()).hexdigest()
 
     def go_back(self):
-        self.close()  # Close the Register dialog
-        self.login_dialog.show()
+        self.close()
 
     def closeEvent(self, event):
-        # You can add any additional cleanup here if needed
+        self.parent().show()  # Show LoginDialog again when RegisterDialog is closed
         super().closeEvent(event)
 
 class LoginDialog(QDialog):
@@ -1201,18 +1278,18 @@ class LoginDialog(QDialog):
         self.password_input.setEchoMode(QLineEdit.Password)
 
         user_label = QLabel("Username:")
-        user_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        user_label.setStyleSheet("color: black; font-size: 16px; font-weight:bold;")
         self.username_input.setPlaceholderText("Enter username")
         self.username_input.setToolTip("Username must be unique")
         self.username_input.setMaxLength(20)
-        self.username_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+        self.username_input.setStyleSheet("background-color: white; color: black; font-size: 16px; border: 1px solid black; border-radius: 5px; padding: 15px;")
         
         password_label = QLabel("Password:")
-        password_label.setStyleSheet("color: black; font-size: 16px; font-style:bold;")
+        password_label.setStyleSheet("color: black; font-size: 16px; font-weight:bold;")
         self.password_input.setPlaceholderText("Enter password")
         self.password_input.setToolTip("Password must be at least 6 characters long")
         self.password_input.setMaxLength(20)
-        self.password_input.setStyleSheet("background-color: #f0f0f0; color: black; font-size: 16px; border: 1px solid #ccc; border-radius: 5px;")
+        self.password_input.setStyleSheet("background-color: white; color: black; font-size: 16px; border: 1px solid black; border-radius: 5px; padding: 15px;")
 
         login_form.addRow(user_label, self.username_input)
         login_form.addRow(password_label, self.password_input)
@@ -1222,16 +1299,44 @@ class LoginDialog(QDialog):
         spacer.setFixedHeight(10)
         login_form.addRow(spacer)
 
+        # --- Button layout ---
+        button_layout = QVBoxLayout()
+
         # --- Buttons ---
         self.login_button = QPushButton("Login", self)
         self.login_button.setStyleSheet("background-color: black; color: white; font-size: 14px;")
         self.login_button.clicked.connect(self.login)
-        login_form.addRow(self.login_button)
+        button_layout.addWidget(self.login_button)
 
         self.register_button = QPushButton("Register", self)
-        self.register_button.setStyleSheet("background-color: light-gray; color: white; font-size: 14px;")
+        self.register_button.setStyleSheet("background-color: lightGray; color: black; font-size: 14px;")
         self.register_button.clicked.connect(self.register)
-        login_form.addRow(self.register_button)
+        button_layout.addWidget(self.register_button)
+
+        # self.dev_button = QPushButton("")
+        # self.dev_button.setStyleSheet("""
+        #         QPushButton {
+        #             background-color: transparent;
+        #             border: none;
+        #         }
+        #         QPushButton:hover {
+        #             background-color: #27ae60;
+        #             border: 1px solid white;
+        #             border-radius: 5px;
+        #         }
+        #     """)
+        # self.dev_button.setFixedSize(30, 30)  # Small clickable area
+        # self.dev_button.setToolTip("Developer Login")
+        # self.dev_button.clicked.connect(self.dev_login)
+        # corner_button = QWidget()
+        # corner_layout = QHBoxLayout()
+        # corner_layout.addStretch()
+        # corner_layout.addWidget(self.dev_button)
+        # corner_button.setLayout(corner_layout)
+
+        # --- Add button layout to form ---
+        login_form.addRow(button_layout)
+        # login_form.addRow(corner_button)
 
         # --- Form Widget ---
         form_widget = QWidget()
@@ -1247,35 +1352,85 @@ class LoginDialog(QDialog):
 
         # --- Main Layout ---
         layout = QVBoxLayout()
-        error_label = QLabel("")  # Label for error messages
-        error_label.setFixedHeight(10)
-        layout.addWidget(error_label)
+        self.error_label = QLabel("")
+        self.error_label.setFixedHeight(10)
+        layout.addWidget(self.error_label)
+        # layout.addWidget(corner_button)
+        layout.setAlignment(Qt.AlignCenter)
         layout.addLayout(center_layout)  # Add the centered layout to the main layout
 
         self.setLayout(layout)  # Set the main layout to the dialog
 
+        # Initialize database
+        self.init_db()
+
+    # def dev_login(self):
+    #     # Hardcoded developer credentials and IP
+    #     os.environ['BOSDYN_CLIENT_USERNAME'] = "user2"
+    #     os.environ['BOSDYN_CLIENT_PASSWORD'] = "simplepassword"
+    #     global IP
+    #     IP = "192.168.80.3"  # or use your actual dev IP
+
+    #     self.close()  # close the login window
+    #     mainInterface()  # launch the main interface directly
+
     def login(self):
         username = self.username_input.text()
         password = self.password_input.text()
-        if self.parent().login_user(username, password):
+        if self.user_exists(username) and self.verify_password(username, password):
             self.accept()
         else:
-            # QMessageBox.warning(self, "Login Error", "Invalid username or password.")
             self.error_label.setText("Invalid credentials")
-            self.error_label.setStyleSheet("color: red; font-style: bold;")
+            self.error_label.setStyleSheet("color: red; font-weight: bold; font-size: 14px;")
+
+    def init_db(self):
+        self.conn = sqlite3.connect('users.db')
+        self.cursor = self.conn.cursor()
+        self.cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT NOT NULL)''')
+        self.conn.commit()
+
+    def user_exists(self, username):
+        self.cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+        return self.cursor.fetchone() is not None
+
+    def verify_password(self, username, password):
+        cursor.execute('SELECT password FROM users WHERE username = ?', (username,))
+        stored_password = cursor.fetchone()
+        if stored_password:
+            return stored_password[0] == self.hash_password(password)
+        return False
+
+    def hash_password(self, password):
+        return hashlib.sha256(password.encode()).hexdigest()
 
     def register(self):
-        self.hide()
-        dialog = RegisterDialog(self)
+        self.setEnabled(False)
+        dialog = RegisterDialog(self.conn, self.cursor, self)
         dialog.exec_()
-        self.show()
+        self.setEnabled(True)
 
     def closeEvent(self, event):
-        # You can add any additional cleanup here if needed
-        super().closeEvent(event)
+        conn.close()  # Close the database connection
+        sys.exit()
+        print("Login dialog closed")  # Optional logging
+        super().closeEvent(event)  # ✅ Just call the parent handler
+
+    def reject(self):
+        # User hit the X or pressed Esc
+        super().reject()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # Create the main window but don't show it yet
     main_window = RobotControlApp()
-    main_window.show()
-    sys.exit(app.exec_())
+    
+    # Show login dialog BEFORE showing main window
+    login_dialog = LoginDialog(main_window)
+    if login_dialog.exec_() == QDialog.Accepted:
+        main_window.statusBar().showMessage("User Login successful")
+        main_window.show()  # Now show it
+        sys.exit(app.exec_())
+    elif login_dialog.exec_() == QDialog.Rejected:
+        conn.close()
+        sys.exit()  # Exit if login canceled

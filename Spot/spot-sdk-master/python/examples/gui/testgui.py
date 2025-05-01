@@ -765,7 +765,7 @@ def mainInterface():
 
     side_menu = QFrame()
     side_menu.setFixedWidth(200)
-    side_menu.setStyleSheet("background-color: #2c3e50; color: white;")
+    side_menu.setStyleSheet("background-color: white; color: black; opacity: 0.6;")
     side_menu.setVisible(False)  # Initially hidden
 
     side_layout = QVBoxLayout()
@@ -779,7 +779,7 @@ def mainInterface():
     speed_slider_layout.setAlignment(Qt.AlignHCenter)
 
     speed_label = QLabel("Speed: 0.5 m/s")
-    speed_label.setStyleSheet("font-size: 16px; color: white;")
+    speed_label.setStyleSheet("font-size: 16px; color: black;")
     speed_label.setAlignment(Qt.AlignCenter)
 
     speed_slider = QSlider(Qt.Horizontal)
@@ -805,7 +805,7 @@ def mainInterface():
     angular_slider_layout.setAlignment(Qt.AlignHCenter)
 
     angular_label = QLabel("Angular Speed: 0.8 rad/s")
-    angular_label.setStyleSheet("font-size: 16px; color: white;")
+    angular_label.setStyleSheet("font-size: 16px; color: black;")
     angular_label.setAlignment(Qt.AlignCenter)
 
     angular_slider = QSlider(Qt.Horizontal)
@@ -842,8 +842,9 @@ def mainInterface():
             pixmap = QPixmap(self.image_path)
             if not pixmap.isNull():
                 self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+                super().resizeEvent(event)
 
-    bg_label = ResizableBackground("./Gold-Brayer2.png")
+    bg_label = ResizableBackground("./Gold-Brayer2.jpg")
     bg_label.setParent(central_widget)
     bg_label.setGeometry(central_widget.rect())
     bg_label.lower()  # Ensure it's behind the overlay
@@ -875,9 +876,9 @@ def mainInterface():
     check_battery_status(main_window)  # initial call
     container_layout.addWidget(battery_label)
 
-    toggle_menu_button = QPushButton("☰ Menu")
+    toggle_menu_button = QPushButton("☰")
     toggle_menu_button.setFixedSize(100, 30)
-    toggle_menu_button.setStyleSheet("background-color: #34495e; color: white; font-size: 14px;")
+    toggle_menu_button.setStyleSheet("background-color: black; color: white; font-size: 14px;")
     toggle_menu_button.clicked.connect(lambda: side_menu.setVisible(not side_menu.isVisible()))
     container_layout.insertWidget(0, toggle_menu_button)
 
@@ -1085,14 +1086,9 @@ class RobotControlApp(QMainWindow):
             """)
         self.dev_button.setFixedSize(30, 10)
         self.dev_button.clicked.connect(self.dev_login)
-        corner_button = QWidget()
-        corner_layout = QHBoxLayout()
-        corner_layout.addWidget(self.dev_button)
-        corner_button.setLayout(corner_layout)
 
         center_layout = QHBoxLayout()
         center_layout.addStretch(1)  # Add flexible space before the form
-        center_layout.addWidget(corner_button)
         center_layout.addWidget(form_widget)
         center_layout.addStretch(1)  # Add flexible space after the form
         center_layout.setAlignment(Qt.AlignCenter)  # Center the layout
@@ -1103,8 +1099,8 @@ class RobotControlApp(QMainWindow):
         error_label.setFixedHeight(10)
 
         layout.addWidget(error_label)
-        # layout.addWidget(corner_button)
         layout.addLayout(center_layout)  # Add the centered layout to the main layout
+        layout.addWidget(self.dev_button)
 
         # Set central widget
         container = QWidget()
@@ -1143,11 +1139,13 @@ class ResizableBackground(QLabel):
         self.image_path = image_path
         self.setAlignment(Qt.AlignCenter)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
 
     def resizeEvent(self, event):
         pixmap = QPixmap(self.image_path)
         if not pixmap.isNull():
             self.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            super().resizeEvent(event)
 
 class RegisterDialog(QDialog):
     def __init__(self, conn, cursor, parent=None):
@@ -1155,12 +1153,32 @@ class RegisterDialog(QDialog):
         self.conn = conn
         self.cursor = cursor
         self.setWindowTitle("Register")
-        self.setGeometry(100, 100, 400, 300)
+        self.setGeometry(100, 100, 400, 450)
 
         # --- Background Image ---
-        bg_label = ResizableBackground("./Gold-Brayer.png")
+        bg_label = ResizableBackground("./bg11.jpg")
+        # if the width of the frame is above 1000, then scale the image to fit the frame
+        if bg_label.width() > 1000:
+            bg_label = ResizableBackground("./bg10.jpg")
+            bg_label.setScaledContents(True)
+        else:
+            bg_label = ResizableBackground("./bg11.jpg")
         bg_label.setParent(self)
         bg_label.lower()  # Ensure it's behind all the other widgets
+
+        # --- Overlay widget ---
+        overlay_widget = QWidget(self)  # Set self as parent
+        overlay_widget.setStyleSheet("background: transparent;")
+
+        # --- Overlay Layout ---
+        overlay_layout = QVBoxLayout()
+        overlay_layout.setAlignment(Qt.AlignCenter)
+        overlay_widget.setLayout(overlay_layout)
+        overlay_widget.setGeometry(self.rect())  # Initially fill the dialog
+
+        # --- main Layout ---
+        main_layout = QHBoxLayout(self)
+        main_layout.addWidget(overlay_widget)
 
         # --- Form Layout ---
         login_form = QFormLayout()
@@ -1216,12 +1234,25 @@ class RegisterDialog(QDialog):
 
         # --- Main Layout ---
         layout = QVBoxLayout()
-        error_label = QLabel("")  # Label for error messages
-        error_label.setFixedHeight(10)
-        layout.addWidget(error_label)
+        self.error_label = QLabel("")
+        self.error_label.setFixedHeight(10)
+        layout.addWidget(self.error_label)
+        layout.setAlignment(Qt.AlignCenter)
         layout.addLayout(center_layout)  # Add the centered layout to the main layout
 
-        self.setLayout(layout)  # Set the main layout to the dialog
+        # Set the main layout to the dialog
+        container = QWidget()
+        container_layout = QVBoxLayout()
+        container_layout.addLayout(layout)
+        container.setLayout(container_layout)
+        overlay_layout.addWidget(container)
+
+        # Resize event to adjust background and overlay
+        def resize_overlay(event):
+            bg_label.setGeometry(self.rect())
+            overlay_widget.setGeometry(self.rect())
+
+        self.resizeEvent = resize_overlay
 
     def register(self):
         username = self.username_input.text()
@@ -1266,9 +1297,25 @@ class LoginDialog(QDialog):
         self.setGeometry(100, 100, 400, 300)
 
         # --- Background Image ---
-        bg_label = ResizableBackground("./Gold-Brayer.png")
+        bg_label = ResizableBackground("./bg6.jpg")
+        # bg_label.setScaledContents(True)
         bg_label.setParent(self)
-        bg_label.lower()  # Ensure it's behind all the other widgets
+        bg_label.setGeometry(self.rect())
+        bg_label.lower()  # Ensure it's behind the overlay
+
+        # --- Overlay widget ---
+        overlay_widget = QWidget(self)  # Set self as parent
+        overlay_widget.setStyleSheet("background: transparent;")
+
+        # --- Overlay Layout ---
+        overlay_layout = QVBoxLayout()
+        overlay_layout.setAlignment(Qt.AlignCenter)
+        overlay_widget.setLayout(overlay_layout)
+        overlay_widget.setGeometry(self.rect())  # Initially fill the dialog
+
+        # --- main Layout ---
+        main_layout = QHBoxLayout(self)
+        main_layout.addWidget(overlay_widget)
 
         # --- Form Layout ---
         login_form = QFormLayout()
@@ -1313,30 +1360,24 @@ class LoginDialog(QDialog):
         self.register_button.clicked.connect(self.register)
         button_layout.addWidget(self.register_button)
 
-        # self.dev_button = QPushButton("")
-        # self.dev_button.setStyleSheet("""
-        #         QPushButton {
-        #             background-color: transparent;
-        #             border: none;
-        #         }
-        #         QPushButton:hover {
-        #             background-color: #27ae60;
-        #             border: 1px solid white;
-        #             border-radius: 5px;
-        #         }
-        #     """)
-        # self.dev_button.setFixedSize(30, 30)  # Small clickable area
-        # self.dev_button.setToolTip("Developer Login")
-        # self.dev_button.clicked.connect(self.dev_login)
-        # corner_button = QWidget()
-        # corner_layout = QHBoxLayout()
-        # corner_layout.addStretch()
-        # corner_layout.addWidget(self.dev_button)
-        # corner_button.setLayout(corner_layout)
+        self.dev_button = QPushButton("")
+        self.dev_button.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    border: none;
+                    padding: 0;
+                }
+                QPushButton:hover {
+                    background-color: #27ae60;
+                    border: 1px solid white;
+                    border-radius: 5px;
+                }
+            """)
+        self.dev_button.setFixedSize(30, 10)
+        self.dev_button.clicked.connect(self.dev_login)
 
         # --- Add button layout to form ---
         login_form.addRow(button_layout)
-        # login_form.addRow(corner_button)
 
         # --- Form Widget ---
         form_widget = QWidget()
@@ -1344,9 +1385,10 @@ class LoginDialog(QDialog):
         form_widget.setStyleSheet("background-color: white; border-radius: 10px; padding: 20px;")
 
         # --- Centering the Form ---
-        center_layout = QHBoxLayout()
+        center_layout = QVBoxLayout()
         center_layout.addStretch(1)  # Add flexible space before the form
         center_layout.addWidget(form_widget)
+        center_layout.addWidget(self.dev_button)
         center_layout.addStretch(1)  # Add flexible space after the form
         center_layout.setAlignment(Qt.AlignCenter)  # Center the layout
 
@@ -1355,24 +1397,32 @@ class LoginDialog(QDialog):
         self.error_label = QLabel("")
         self.error_label.setFixedHeight(10)
         layout.addWidget(self.error_label)
-        # layout.addWidget(corner_button)
         layout.setAlignment(Qt.AlignCenter)
         layout.addLayout(center_layout)  # Add the centered layout to the main layout
 
-        self.setLayout(layout)  # Set the main layout to the dialog
+        # Set the main layout to the dialog
+        container = QWidget()
+        container_layout = QVBoxLayout()
+        container_layout.addLayout(layout)
+        container.setLayout(container_layout)
+        overlay_layout.addWidget(container)
+
+        # Resize event to adjust background and overlay
+        def resize_overlay(event):
+            bg_label.setGeometry(self.rect())
+            overlay_widget.setGeometry(self.rect())
+
+        self.resizeEvent = resize_overlay
 
         # Initialize database
         self.init_db()
 
-    # def dev_login(self):
-    #     # Hardcoded developer credentials and IP
-    #     os.environ['BOSDYN_CLIENT_USERNAME'] = "user2"
-    #     os.environ['BOSDYN_CLIENT_PASSWORD'] = "simplepassword"
-    #     global IP
-    #     IP = "192.168.80.3"  # or use your actual dev IP
-
-    #     self.close()  # close the login window
-    #     mainInterface()  # launch the main interface directly
+    def dev_login(self):
+        # takes me to the robot zcontrol app
+        username = "Dev"
+        password = "devuser"
+        if self.user_exists(username) and self.verify_password(username, password):
+            self.accept()
 
     def login(self):
         username = self.username_input.text()

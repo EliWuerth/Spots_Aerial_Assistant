@@ -1156,14 +1156,9 @@ class RegisterDialog(QDialog):
         self.setGeometry(100, 100, 400, 450)
 
         # --- Background Image ---
-        bg_label = ResizableBackground("./bg11.jpg")
-        # if the width of the frame is above 1000, then scale the image to fit the frame
-        if bg_label.width() > 1000:
-            bg_label = ResizableBackground("./bg10.jpg")
-            bg_label.setScaledContents(True)
-        else:
-            bg_label = ResizableBackground("./bg11.jpg")
+        bg_label = ResizableBackground("./bg6.jpg")
         bg_label.setParent(self)
+        bg_label.setGeometry(self.rect())
         bg_label.lower()  # Ensure it's behind all the other widgets
 
         # --- Overlay widget ---

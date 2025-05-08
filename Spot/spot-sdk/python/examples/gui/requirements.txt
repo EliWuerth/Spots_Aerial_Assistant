@@ -6,4 +6,3 @@ opencv-python
 Pillow
 requests
 PyQt5
-curses

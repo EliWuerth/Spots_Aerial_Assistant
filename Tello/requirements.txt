@@ -4,3 +4,4 @@ opencv-python==4.11.0.86
 opencv-contrib-python==4.11.0.86
 pillow==9.0.1
 PyQt5
+matplotlib

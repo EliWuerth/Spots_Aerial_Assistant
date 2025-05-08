@@ -6,4 +6,4 @@ numpy
 opencv-python
 Pillow
 requests
-tkinter
+PyQt5

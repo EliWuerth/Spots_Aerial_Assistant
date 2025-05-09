@@ -114,6 +114,7 @@ and log in
 Then you use SPOT's Creditials to log in
 
 To then operate SPOT you must 'Take lease'
+
 ---
 
 ## Setup the Tello Virtual Environment
@@ -164,14 +165,14 @@ To then operate SPOT you must 'Take lease'
  **Connect to the DJI Tello Drone**  
    - Turn on the **DJI Tello drone**  
    - Connect your device to the **WiFi network** (e.g., `"TELLO-######"`)
-   
- **MacOS**
+
+**MacOS**
 ```
 cd examples
 python3 gui.py
 ```
 
- **Windows**
+**Windows**
 ```
 cd examples
 python gui.py

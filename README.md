@@ -1,7 +1,17 @@
 # Spots Aerial Assistant
 
 ## Project Description
+Our capstone project focuses on developing a drone-assisted system for SPOT, utilizing the DJI Tello drone. This proof-of-concept integrates autonomous navigation, computer vision, and custom-built GUI tools to demonstrate how robotics can support real-world emergency scenarios.
 
+### Tello GUI
+We built a Python-based GUI for the Tello that enables both manual and autonomous control. It incorporates ArUco marker tracking for precision navigation to and from SPOT, which acts as a mobile base. The interface includes features such as live video feed, camera switching, battery monitoring, and custom functions like human tracking and "Go to ArUco."
+
+### SPOT GUI
+In addition to the drone interface, we developed a dedicated GUI for controlling and monitoring SPOT. Built using Python and the Spot SDK, the GUI provides real-time feedback on Spot’s battery, temperature, and system health. It supports keyboard-based manual navigation as well as automated posture and docking commands.
+
+This project showcases the potential for low-cost, scalable solutions in search and rescue operations and provided us hands-on experience with robotics, drone programming, and computer vision.
+
+Below you will find basic control and set up instructions.
 
 ## Clone the Repository
 ```

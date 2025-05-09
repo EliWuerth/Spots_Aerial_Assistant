@@ -187,8 +187,10 @@ Q,E for Rotation
 UP and DOWN arrow keys for vertical
 ```
 **FOR SPOT**
+```
 W,A,S,D for basic movement
 For other fucntions please refer to (`"reference_images/spot_controls.jpg"`)
+```
 
 **Other functions**
 Use buttons and try them out and have fun `:)`

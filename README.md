@@ -95,6 +95,7 @@ py.exe -3.9 -m pip install venv
 **Connect to SPOT**  
    - Turn on **SPOT**  
    - Connect your device to the **WiFi network** (e.g., `"spot-BD-########"`)
+
  **MacOS**
 ```
 cd examples/gui

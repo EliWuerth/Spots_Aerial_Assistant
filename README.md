@@ -6,10 +6,15 @@ Our capstone project focuses on developing a drone-assisted system for SPOT, uti
 ### Tello GUI
 We built a Python-based GUI for the Tello that enables both manual and autonomous control. It incorporates ArUco marker tracking for precision navigation to and from SPOT, which acts as a mobile base. The interface includes features such as live video feed, camera switching, battery monitoring, and custom functions like human tracking and "Go to ArUco."
 
+<img width="332" height="244" alt="drone" src="https://github.com/user-attachments/assets/0674c7bb-c271-4e55-801c-16cfccd8d7d5" />
+
 ### SPOT GUI
 In addition to the drone interface, we developed a dedicated GUI for controlling and monitoring SPOT. Built using Python and the Spot SDK, the GUI provides real-time feedback on Spot’s battery, temperature, and system health. It supports keyboard-based manual navigation as well as automated posture and docking commands.
 
 This project showcases the potential for low-cost, scalable solutions in search and rescue operations and provided us hands-on experience with robotics, drone programming, and computer vision.
+
+<img width="448" height="325" alt="spot" src="https://github.com/user-attachments/assets/baeb5a95-d053-4216-9261-13985b1b21b4" />
+
 
 Below you will find basic control and set up instructions.
 
